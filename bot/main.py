@@ -7,7 +7,7 @@ from binance import AsyncClient
 from dotenv import load_dotenv
 from bot.exchange.binance_service import get_usdt_pairs, filter_by_volume, get_order
 from bot.logic.signal_engine import check_entry_conditions
-from bot.logic.trade_manager import open_trade, place_take_profit_order, dca
+from bot.logic.trade_manager import open_trade, place_take_profit_order, dca, get_total_balance
 from bot.logic.dca_engine import check_dca_conditions
 from bot.risk.risk_manager import calculate_total_equity
 from bot.database.database_service import create_tables, insert_trade, insert_order, get_open_trades, update_trade_tp_order_id, update_trade_status, update_trade_dca
@@ -59,7 +59,7 @@ async def main():
         logging.info(f"Tradable symbols: {symbols}")
 
         # Initialize variables for daily loss limit
-        initial_balance = 1000  # TODO: Get initial balance from account or DB
+        initial_balance = await get_total_balance(client)
         daily_loss_limit = config['daily_loss_limit'] / 100
         daily_initial_equity = initial_balance
         daily_loss_limit_reached = False
@@ -108,63 +108,72 @@ async def main():
 
                     # Send daily report
                     total_equity = await calculate_total_equity(client, open_trades, initial_balance)
-                    daily_report = f"Daily report:\nInitial equity: {daily_initial_equity}\nTotal equity: {total_equity}" # Removed extra parenthesis
+                    daily_report = f"Daily report:\nInitial equity: {daily_initial_equity}\nTotal equity: {total_equity}"
                     await telegram_service.send_message(telegram_chat_id, daily_report)
 
-                if not daily_loss_limit_reached and symbol not in open_trades and await check_entry_conditions(client, symbol, config):
-                    logging.info(f"Entry conditions met for {symbol}")
-                    # Open trade
-                    trade_details = await open_trade(client, symbol, config)
-                    if trade_details:
-                        logging.info(f"Trade opened for {symbol}: {trade_details}")
-                        message = f"<b>Trade opened</b>\nSymbol: {symbol}\nPrice: {trade_details['avg_price']}\nQuantity: {trade_details['quantity']}"
-                        trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
-                        open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': None}
+                # Check daily loss limit
+                total_equity = await calculate_total_equity(client, open_trades, initial_balance)
+                if (daily_initial_equity - total_equity) / daily_initial_equity * 100 >= config['daily_loss_limit']:
+                    if not daily_loss_limit_reached:
+                        logging.warning(f"Daily loss limit reached: {config['daily_loss_limit']}%. Stopping new trades.")
+                        daily_loss_limit_reached = True
+                        await telegram_service.send_message(telegram_chat_id, f"Daily loss limit reached: {config['daily_loss_limit']}%. Stopping new trades.")
 
-                        # Send Telegram notification
-                        await telegram_service.send_message(telegram_chat_id, message)
+                for symbol in symbols:
+                    if not daily_loss_limit_reached and symbol not in open_trades and await check_entry_conditions(client, symbol, config):
+                        logging.info(f"Entry conditions met for {symbol}")
+                        # Open trade
+                        trade_details = await open_trade(client, symbol, config)
+                        if trade_details:
+                            logging.info(f"Trade opened for {symbol}: {trade_details}")
+                            message = f"<b>Trade opened</b>\nSymbol: {symbol}\nPrice: {trade_details['avg_price']}\nQuantity: {trade_details['quantity']}"
+                            trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
+                            open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': None}
 
-                        # Place take profit order
-                        tp_order = await place_take_profit_order(client, symbol, trade_details["quantity"], trade_details["avg_price"], config)
-                        if tp_order:
-                            logging.info(f"Take profit order placed for {symbol}: {tp_order}")
-                            await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
-                            await update_trade_tp_order_id(trade_id, tp_order['orderId'])
-                            open_trades[symbol]['tp_order_id'] = tp_order['orderId']
+                            # Send Telegram notification
+                            await telegram_service.send_message(telegram_chat_id, message)
+
+                            # Place take profit order
+                            tp_order = await place_take_profit_order(client, symbol, trade_details["quantity"], trade_details["avg_price"], config)
+                            if tp_order:
+                                logging.info(f"Take profit order placed for {symbol}: {tp_order}")
+                                await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
+                                await update_trade_tp_order_id(trade_id, tp_order['orderId'])
+                                open_trades[symbol]['tp_order_id'] = tp_order['orderId']
+                            else:
+                                logging.error(f"Failed to place take profit order for {symbol}")
+                                await telegram_service.send_message(telegram_chat_id, f"Failed to place take profit order for {symbol}")
                         else:
-                            logging.error(f"Failed to place take profit order for {symbol}")
-                            await telegram_service.send_message(telegram_chat_id, f"Failed to place take profit order for {symbol}")
-                    else:
-                        logging.error(f"Failed to open trade for {symbol}")
-                        await telegram_service.send_message(telegram_chat_id, f"Failed to open trade for {symbol}")
+                            logging.error(f"Failed to open trade for {symbol}")
+                            await telegram_service.send_message(telegram_chat_id, f"Failed to open trade for {symbol}")
 
-                elif symbol in open_trades and await check_dca_conditions(client, symbol, config, open_trades[symbol]["avg_price"]):
-                    logging.info(f"DCA conditions met for {symbol}")
-                    # Perform DCA
-                    tp_order = await dca(client, symbol, config, open_trades[symbol]["quantity"], open_trades[symbol]["avg_price"], open_trades[symbol]['trade_id'], open_trades[symbol]['tp_order_id'])
-                    if tp_order:
-                        logging.info(f"DCA performed for {symbol}: {tp_order}")
+                    elif symbol in open_trades and await check_dca_conditions(client, symbol, config, open_trades[symbol]["avg_price"]):
+                        logging.info(f"DCA conditions met for {symbol}")
+                        # Perform DCA
+                        tp_order = await dca(client, symbol, config, open_trades[symbol]["quantity"], open_trades[symbol]["avg_price"], open_trades[symbol]['trade_id'], open_trades[symbol]['tp_order_id'])
+                        if tp_order:
+                            logging.info(f"DCA performed for {symbol}: {tp_order}")
 
-                        # Update trade details with the new values
-                        ticker = await client.get_ticker(symbol=symbol)
+                            # Update trade details with the new values
+                            ticker = await client.get_ticker(symbol=symbol)
                         current_price = float(ticker['lastPrice'])
                         dca_quantity = open_trades[symbol]["quantity"] * config['dca_scales'][0]
                         new_avg_price = (open_trades[symbol]["avg_price"] * open_trades[symbol]["quantity"] + current_price * dca_quantity) / (open_trades[symbol]["quantity"] + dca_quantity)
                         open_trades[symbol]["avg_price"] = new_avg_price
                         open_trades[symbol]["quantity"] += dca_quantity
 
-                        # Update DB
-                        await update_trade_dca(open_trades[symbol]['trade_id'], new_avg_price, open_trades[symbol]["quantity"], 1)  # increment dca_count
+                        # Round quantity to step size
+                        from bot.logic.trade_manager import get_symbol_info, round_quantity
+                        symbol_info = await get_symbol_info(client, symbol)
+                        if symbol_info:
+                            step_size = symbol_info['filters'][2]['stepSize']
+                            open_trades[symbol]["quantity"] = await round_quantity(open_trades[symbol]["quantity"], step_size)
+                        else:
+                            logging.error(f"Failed to perform DCA for {symbol}")
+                            await telegram_service.send_message(telegram_chat_id, f"Failed to perform DCA for {symbol}")
 
-                        # Send Telegram notification
-                        message = f"<b>DCA performed</b>\nSymbol: {symbol}\nNew average price: {open_trades[symbol]['avg_price']}\nNew quantity: {open_trades[symbol]['quantity']}"
-                        await telegram_service.send_message(telegram_chat_id, message)
                     else:
-                        logging.error(f"Failed to perform DCA for {symbol}")
-                        await telegram_service.send_message(telegram_chat_id, f"Failed to perform DCA for {symbol}")
-
-                else:
-                    logging.debug(f"No action for {symbol}")
+                        logging.debug(f"No action for {symbol}")
 
                 consecutive_errors = 0  # Reset error counter if no errors occurred
                 await asyncio.sleep(60)  # Check every 60 seconds

@@ -8,7 +8,31 @@ from bot.utils.retry import retry
 logger = logging.getLogger(__name__)
 
 @retry(max_retries=3, backoff_factor=2)
-async def get_available_balance(client: AsyncClient, asset: str = 'USDT') -> float:
+async def get_total_balance(client: AsyncClient) -> float:
+    '''
+    Retrieves the total balance in USDT equivalent from Binance.
+    '''
+    try:
+        account = await client.get_account()
+        balances = account['balances']
+        total_balance = 0.0
+        for balance in balances:
+            asset = balance['asset']
+            free = float(balance['free'])
+            locked = float(balance['locked'])
+            total_asset = free + locked
+            if asset == 'USDT':
+                total_balance += total_asset
+            elif total_asset > 0:
+                # Get price in USDT
+                if asset + 'USDT' in ['BTCUSDT', 'ETHUSDT', etc.]:  # simplify, assume common pairs
+                    ticker = await client.get_ticker(symbol=asset + 'USDT')
+                    price = float(ticker['lastPrice'])
+                    total_balance += total_asset * price
+        return total_balance
+    except BinanceAPIException as e:
+        logger.error(f"Error getting total balance: {e}")
+        return 0.0
     '''
     Retrieves the available balance for a given asset from Binance.
     '''

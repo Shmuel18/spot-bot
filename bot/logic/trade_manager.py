@@ -2,7 +2,7 @@ import asyncio
 import logging
 from binance import AsyncClient
 from binance.exceptions import BinanceAPIException
-from bot.database.database_service import insert_order, update_trade_status, update_trade_tp_order_id, get_open_trades
+from bot.database.database_service import insert_order, update_trade_status, update_trade_tp_order_id
 from bot.utils.retry import retry
 
 logger = logging.getLogger(__name__)
@@ -26,9 +26,9 @@ async def get_available_balance(client: AsyncClient, asset: str = 'USDT') -> flo
         return 0.0
 
 @retry(max_retries=3, backoff_factor=2)
-async def get_total_balance(client: AsyncClient, config: dict) -> float:
+async def get_total_balance(client: AsyncClient, config: dict, open_trades: dict) -> float:
     '''
-    Retrieves the total balance in USDT equivalent from Binance.
+    Retrieves the total balance in USDT equivalent from Binance, including unrealized PnL from open trades.
     '''
     try:
         account = await client.get_account()
@@ -50,7 +50,6 @@ async def get_total_balance(client: AsyncClient, config: dict) -> float:
                     pass  # ignore if no pair
         
         # Add unrealized PnL from open trades
-        open_trades = await get_open_trades()
         if open_trades:
             symbols = [trade['symbol'] for trade in open_trades]
             ticker_stats = await client.get_ticker(symbols=symbols)
@@ -59,7 +58,7 @@ async def get_total_balance(client: AsyncClient, config: dict) -> float:
             for trade in open_trades:
                 symbol = trade['symbol']
                 current_price = prices.get(symbol, 0)
-                unrealized_pnl = (current_price - trade['avg_price']) * trade['quantity']
+                unrealized_pnl = (current_price - trade['avg_price']) * trade['base_qty']
                 total_balance += unrealized_pnl
 
         return total_balance

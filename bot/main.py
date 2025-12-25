@@ -1,5 +1,3 @@
-
-
 import asyncio
 import logging
 import yaml
@@ -64,7 +62,7 @@ async def main():
         logging.info(f"Tradable symbols: {symbols}")
 
         # Initialize variables for daily loss limit
-        initial_balance = await get_total_balance(client, config)
+        initial_balance = await get_total_balance(client, config, open_trades)
         daily_loss_limit = config['daily_loss_limit'] / 100
         daily_initial_equity = initial_balance
         daily_loss_limit_reached = False
@@ -118,12 +116,12 @@ async def main():
                 current_day = datetime.datetime.utcnow().day
                 if current_day != last_day:
                     logging.info("New day, resetting daily loss limit.")
-                    daily_initial_equity = await get_total_balance(client, config)
+                    daily_initial_equity = await get_total_balance(client, config, open_trades)
                     daily_loss_limit_reached = False
                     last_day = current_day
 
                     # Send daily report
-                    total_equity = await get_total_balance(client, open_trades, initial_balance)
+                    total_equity = await get_total_balance(client, config, open_trades)
                     daily_report = f"Daily report:\nInitial equity: {daily_initial_equity}\nTotal equity: {total_equity}" # Removed extra parenthesis
                     await telegram_service.send_message(telegram_chat_id, daily_report)
 
@@ -135,7 +133,7 @@ async def main():
 
                 # Check daily loss limit in real-time
                 if not daily_loss_limit_reached:
-                    total_equity = await get_total_balance(client, open_trades, initial_balance)
+                    total_equity = await get_total_balance(client, config, open_trades)
                     loss_ratio = (daily_initial_equity - total_equity) / daily_initial_equity if daily_initial_equity > 0 else 0
                     if loss_ratio >= daily_loss_limit:
                         daily_loss_limit_reached = True

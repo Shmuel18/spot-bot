@@ -5,6 +5,8 @@ from binance.exceptions import BinanceAPIException
 from bot.database.database_service import insert_order, update_trade_status, update_trade_tp_order_id
 from bot.utils.retry import retry
 
+logger = logging.getLogger(__name__)
+
 @retry(max_retries=3, backoff_factor=2)
 async def get_available_balance(client: AsyncClient, asset: str = 'USDT') -> float:
     '''

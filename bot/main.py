@@ -159,15 +159,16 @@ async def main():
                             ticker = await client.get_ticker(symbol=symbol)
                             current_price = float(ticker['lastPrice'])
                             dca_quantity = open_trades[symbol]["quantity"] * config['dca_scales'][open_trades[symbol]['dca_count']]
-                            new_avg_price = (open_trades[symbol]["avg_price"] * open_trades[symbol]["quantity"] + current_price * dca_quantity) / (open_trades[symbol]["quantity"] + dca_quantity)
-                            open_trades[symbol]["avg_price"] = new_avg_price
-                            open_trades[symbol]["quantity"] += dca_quantity
 
-                            # Round quantity to step size
+                            # Round dca_quantity to step size
                             symbol_info = await get_symbol_info(client, symbol)
                             if symbol_info:
                                 step_size = symbol_info['filters'][2]['stepSize']
-                                open_trades[symbol]["quantity"] = await round_quantity(open_trades[symbol]["quantity"], step_size)
+                                dca_quantity = await round_quantity(dca_quantity, step_size)
+
+                            new_avg_price = (open_trades[symbol]["avg_price"] * open_trades[symbol]["quantity"] + current_price * dca_quantity) / (open_trades[symbol]["quantity"] + dca_quantity)
+                            open_trades[symbol]["avg_price"] = new_avg_price
+                            open_trades[symbol]["quantity"] += dca_quantity
 
                             # Update DB
                             await update_trade_dca(open_trades[symbol]['trade_id'], new_avg_price, open_trades[symbol]["quantity"], open_trades[symbol]['dca_count'] + 1)  # increment dca_count

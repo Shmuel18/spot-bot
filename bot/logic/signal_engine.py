@@ -46,7 +46,7 @@ async def check_entry_conditions(client: AsyncClient, symbol: str, config: dict)
     '''
     try:
         # Get the last 15m candle
-        klines = await client.get_historical_klines(symbol, '15m', '15 minutes ago')
+        klines = await client.get_historical_klines(symbol, config['timeframe'], '15 minutes ago')
         if not klines:
             logger.warning(f"Could not retrieve klines for {symbol}")
             return False

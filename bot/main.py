@@ -62,9 +62,8 @@ async def main():
         logging.info(f"Tradable symbols: {symbols}")
 
         # Initialize variables for daily loss limit
-        initial_balance = await get_total_balance(client, config, open_trades)
         daily_loss_limit = config['daily_loss_limit'] / 100
-        daily_initial_equity = initial_balance
+        daily_initial_equity = await get_total_balance(client, config, open_trades) # Initialize after open_trades is loaded
         daily_loss_limit_reached = False
 
         # Get open trades from the database

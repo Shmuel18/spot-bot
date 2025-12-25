@@ -55,10 +55,10 @@ async def get_total_balance(client: AsyncClient, config: dict, open_trades: dict
             ticker_stats = await client.get_ticker(symbols=symbols)
             prices = {item['symbol']: float(item['lastPrice']) for item in ticker_stats}
 
-            for trade in open_trades:
-                symbol = trade['symbol']
+            for symbol, trade_details in open_trades.items():
+                symbol = symbol
                 current_price = prices.get(symbol, 0)
-                unrealized_pnl = (current_price - trade['avg_price']) * trade['base_qty']
+                unrealized_pnl = (current_price - trade_details['avg_price']) * trade_details['quantity']
                 total_balance += unrealized_pnl
 
         return total_balance

@@ -61,10 +61,7 @@ async def main():
 
         logging.info(f"Tradable symbols: {symbols}")
 
-        # Initialize variables for daily loss limit
-        daily_loss_limit = config['daily_loss_limit'] / 100
-        daily_initial_equity = await get_total_balance(client, config, open_trades) # Initialize after open_trades is loaded
-        daily_loss_limit_reached = False
+
 
         # Get open trades from the database
         open_trades_db = await get_open_trades()
@@ -106,6 +103,11 @@ async def main():
         # Initialize error counter
         consecutive_errors = 0
         max_consecutive_errors = config['max_consecutive_errors']
+
+        # Initialize variables for daily loss limit
+        daily_loss_limit = config['daily_loss_limit'] / 100
+        daily_initial_equity = await get_total_balance(client, config, open_trades)
+        daily_loss_limit_reached = False
 
         # Check entry conditions for each symbol
         last_day = datetime.datetime.utcnow().day

@@ -10,7 +10,7 @@ from bot.logic.signal_engine import check_entry_conditions
 from bot.logic.trade_manager import open_trade, place_take_profit_order, dca, get_total_balance, get_symbol_info, round_quantity
 from bot.logic.dca_engine import check_dca_conditions
 from bot.risk.risk_manager import calculate_total_equity
-from bot.database.database_service import create_tables, insert_trade, insert_order, get_open_trades, update_trade_tp_order_id, update_trade_status
+from bot.database.database_service import create_tables, insert_trade, insert_order, get_open_trades, update_trade_tp_order_id, update_trade_status, update_trade_dca
 from bot.notifications.telegram_service import TelegramService
 
 # Load environment variables from .env file

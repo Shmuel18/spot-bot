@@ -7,7 +7,7 @@ from binance import AsyncClient
 from dotenv import load_dotenv
 from bot.exchange.binance_service import get_usdt_pairs, filter_by_volume, get_order
 from bot.logic.signal_engine import check_entry_conditions
-from bot.logic.trade_manager import open_trade, place_take_profit_order, dca, get_total_balance, get_symbol_info, round_quantity
+from bot.logic.trade_manager import open_trade, place_take_profit_order, dca, get_total_balance, get_symbol_info, round_quantity, round_price
 from bot.logic.dca_engine import check_dca_conditions
 from bot.risk.risk_manager import calculate_total_equity
 from bot.database.database_service import create_tables, insert_trade, insert_order, get_open_trades, update_trade_tp_order_id, update_trade_status, update_trade_dca
@@ -158,7 +158,7 @@ async def main():
                             # Update trade details with the new values
                             ticker = await client.get_ticker(symbol=symbol)
                             current_price = float(ticker['lastPrice'])
-                            dca_quantity = open_trades[symbol]["quantity"] * config['dca_scales'][0]
+                            dca_quantity = open_trades[symbol]["quantity"] * config['dca_scales'][open_trades[symbol]['dca_count']]
                             new_avg_price = (open_trades[symbol]["avg_price"] * open_trades[symbol]["quantity"] + current_price * dca_quantity) / (open_trades[symbol]["quantity"] + dca_quantity)
                             open_trades[symbol]["avg_price"] = new_avg_price
                             open_trades[symbol]["quantity"] += dca_quantity

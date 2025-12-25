@@ -79,6 +79,18 @@ async def round_quantity(quantity: float, step_size: str) -> float:
         logger.error(f"Error rounding quantity: {e}")
         return 0.0
 
+async def round_price(price: float, tick_size: str) -> float:
+    try:
+        decimal_places = 0
+        tick_size_decimal = float(tick_size)
+        while tick_size_decimal < 1:
+            tick_size_decimal *= 10
+            decimal_places += 1
+        return round(price, decimal_places)
+    except Exception as e:
+        logger.error(f"Error rounding price: {e}")
+        return 0.0
+
 @retry(max_retries=3, backoff_factor=2)
 async def open_trade(client: AsyncClient, symbol: str, config: dict) ->  dict | None:
     '''
@@ -120,6 +132,12 @@ async def place_take_profit_order(client: AsyncClient, symbol: str, quantity: fl
         # Calculate take profit price
         tp_percent = config['tp_percent'] / 100
         tp_price = avg_price * (1 + tp_percent)
+
+        # Get symbol info for tick size
+        symbol_info = await get_symbol_info(client, symbol)
+        if symbol_info:
+            tick_size = symbol_info['filters'][0]['tickSize']
+            tp_price = await round_price(tp_price, tick_size)
 
         # Place limit sell order
         order = await client.order_limit_sell(symbol=symbol, quantity=quantity, price=tp_price)

@@ -126,14 +126,21 @@ async def open_trade(client: AsyncClient, symbol: str, config: dict) ->  dict | 
 
     # Place market buy order
     try:
-        order = await client.order_market_buy(symbol=symbol, quantity=quantity)
-        logger.info(f"Placed market buy order for {symbol}: {order}")
+        if config['dry_run']:
+            logger.info(f"DRY RUN: Simulating market buy order for {symbol} quantity {quantity}")
+            # Simulate a ticker price for dry run
+            ticker = await client.get_ticker(symbol=symbol)
+            avg_price = float(ticker['lastPrice'])
+            return {"order": {"orderId": "DRY_RUN_ID", "status": "FILLED"}, "quantity": quantity, "avg_price": avg_price}
+        else:
+            order = await client.order_market_buy(symbol=symbol, quantity=quantity)
+            logger.info(f"Placed market buy order for {symbol}: {order}")
 
-        # Get current price for take profit calculation
-        ticker = await client.get_ticker(symbol=symbol)
-        avg_price = float(ticker['lastPrice'])
+            # Get current price for take profit calculation
+            ticker = await client.get_ticker(symbol=symbol)
+            avg_price = float(ticker['lastPrice'])
 
-        return {"order": order, "quantity": quantity, "avg_price": avg_price}
+            return {"order": order, "quantity": quantity, "avg_price": avg_price}
     except BinanceAPIException as e:
         logger.error(f"Error opening trade for {symbol}: {e}")
         return None
@@ -155,10 +162,14 @@ async def place_take_profit_order(client: AsyncClient, symbol: str, quantity: fl
             tp_price = await round_price(tp_price, tick_size)
 
         # Place limit sell order
-        order = await client.order_limit_sell(symbol=symbol, quantity=quantity, price=tp_price)
-        logger.info(f"Placed take profit order for {symbol}: {order}")
+        if config['dry_run']:
+            logger.info(f"DRY RUN: Simulating limit sell order for {symbol} quantity {quantity} at price {tp_price}")
+            return {"orderId": "DRY_RUN_ID", "status": "FILLED", "price": tp_price, "origQty": quantity}
+        else:
+            order = await client.order_limit_sell(symbol=symbol, quantity=quantity, price=tp_price)
+            logger.info(f"Placed take profit order for {symbol}: {order}")
 
-        return order
+            return order
 
     except Exception as e:
         logger.error(f"Error placing take profit order for {symbol}: {e}")
@@ -173,10 +184,11 @@ async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: 
     try:
         # Cancel existing take profit order
         logger.info(f"Cancelling existing take profit order {tp_order_id} for {symbol}")
-        try:
-            await client.cancel_order(symbol=symbol, orderId=tp_order_id)
-        except BinanceAPIException as e:
-            logger.error(f"Error cancelling take profit order {tp_order_id} for {symbol}: {e}")
+        if not config['dry_run']:
+            try:
+                await client.cancel_order(symbol=symbol, orderId=tp_order_id)
+            except BinanceAPIException as e:
+                logger.error(f"Error cancelling take profit order {tp_order_id} for {symbol}: {e}")
 
         # Get symbol info
         symbol_info = await get_symbol_info(client, symbol)
@@ -193,7 +205,11 @@ async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: 
         dca_quantity = await round_quantity(dca_quantity, step_size)
 
         # Place market buy order
-        dca_order = await client.order_market_buy(symbol=symbol, quantity=dca_quantity)
+        if config['dry_run']:
+            logger.info(f"DRY RUN: Simulating DCA market buy order for {symbol} quantity {dca_quantity}")
+            dca_order = {"orderId": "DRY_RUN_DCA_ID", "status": "FILLED"}
+        else:
+            dca_order = await client.order_market_buy(symbol=symbol, quantity=dca_quantity)
         logger.info(f"Placed DCA order for {symbol}: {dca_order}")
         await insert_order(trade_id, dca_order['orderId'], 'DCA', 0, dca_quantity, dca_order['status'])
 

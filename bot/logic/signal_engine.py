@@ -1,88 +1,64 @@
-import asyncio
 import logging
 from binance import AsyncClient
 
 logger = logging.getLogger(__name__)
 
-# Cache for SMA calculations
-# Structure: { symbol: {'klines': [closes], 'sma': float, 'last_timestamp': int} }
+# Cache structure: { symbol: {'klines': [closes], 'last_timestamp': int} }
 sma_cache = {}
 
 async def get_sma_150(client: AsyncClient, symbol: str, config: dict):
-    '''
-    Gets the SMA(150) for a symbol, updates cache only on new candle closure.
-    '''
-    timeframe = config['timeframe']
-    
     try:
-        # Fetch only the latest closed candle to check for updates
-        latest_klines = await client.get_historical_klines(symbol, timeframe, limit=2)
-        if not latest_klines or len(latest_klines) < 2:
-            return None
+        # קבלת הנר האחרון (הנוכחי שעדיין רץ)
+        latest_klines = await client.get_historical_klines(symbol, config['timeframe'], "2 candles ago")
+        if not latest_klines or len(latest_klines) < 2: return None
         
-        # We look at the candle before the current "running" one (index -2 is the last closed)
-        last_closed_candle = latest_klines[-2]
-        last_ts = last_closed_candle[0]
-        last_close = float(last_closed_candle[4])
+        current_candle_ts = latest_klines[-1][0]
+        current_close = float(latest_klines[-1][4])
 
         if symbol in sma_cache:
-            if last_ts > sma_cache[symbol]['last_ts']:
-                # New candle closed! Update cache
-                closes = sma_cache[symbol]['klines']
-                closes.pop(0)
-                closes.append(last_close)
-                sma = sum(closes) / len(closes)
-                
-                sma_cache[symbol] = {
-                    'klines': closes,
-                    'sma': sma,
-                    'last_ts': last_ts
-                }
-                logger.info(f"SMA Cache updated for {symbol} (New candle TS: {last_ts})")
-            return sma_cache[symbol]['sma']
+            cache = sma_cache[symbol]
+            # עדכון רק אם עברנו לנר חדש
+            if current_candle_ts > cache['last_timestamp']:
+                cache['klines'].pop(0)
+                cache['klines'].append(current_close)
+                cache['last_timestamp'] = current_candle_ts
+            
+            return sum(cache['klines']) / len(cache['klines'])
 
-        # If not in cache, fetch full history
-        klines_full = await client.get_historical_klines(symbol, timeframe, limit=config['sma_length'] + 1)
-        if len(klines_full) < config['sma_length'] + 1:
-            return None
+        # אתחול ראשוני של ה-Cache (150 נרות)
+        limit = config['sma_length'] + 1
+        full_klines = await client.get_historical_klines(symbol, config['timeframe'], limit=limit)
+        if len(full_klines) < config['sma_length']: return None
         
-        # Use only closed candles (excluding the current live one)
-        closed_only = klines_full[:-1]
-        closes = [float(k[4]) for k in closed_only]
-        sma = sum(closes) / len(closes)
-        
+        closes = [float(k[4]) for k in full_klines[:-1]] # כל הנרות שנסגרו
         sma_cache[symbol] = {
             'klines': closes,
-            'sma': sma,
-            'last_ts': closed_only[-1][0]
+            'last_timestamp': full_klines[-1][0]
         }
-        return sma
-        
+        return sum(closes) / len(closes)
+
     except Exception as e:
-        logger.error(f"Error in SMA calculation for {symbol}: {e}")
+        logger.error(f"SMA error for {symbol}: {e}")
         return None
 
 async def check_entry_conditions(client: AsyncClient, symbol: str, config: dict):
     try:
-        # Fetch the most recent closed candle
-        klines = await client.get_historical_klines(symbol, config['timeframe'], limit=2)
-        if not klines or len(klines) < 2:
-            return False
-            
-        last_closed = klines[-2]
-        close_price = float(last_closed[4])
-        open_price = float(last_closed[1])
-        candle_change = ((close_price - open_price) / open_price) * 100
+        klines = await client.get_historical_klines(symbol, config['timeframe'], limit=1)
+        if not klines: return False
+        
+        close_p = float(klines[0][4])
+        open_p = float(klines[0][1])
+        change = (close_p - open_p) / open_p * 100
 
-        current_sma = await get_sma_150(client, symbol, config)
-        if current_sma is None:
-            return False
+        sma = await get_sma_150(client, symbol, config)
+        if sma is None: return False
 
-        if candle_change <= config['dip_threshold'] and close_price < current_sma:
-            logger.info(f"SIGNAL: {symbol} change={candle_change:.2f}% < SMA={current_sma}")
+        # תנאי כניסה: ירידה חדה מתחת לסף ה-Dip ומחיר מתחת ל-SMA150
+        if change <= config['dip_threshold'] and close_p < sma:
+            logger.info(f"SIGNAL Entry: {symbol} at {close_p} (SMA: {sma})")
             return True
             
         return False
     except Exception as e:
-        logger.error(f"Error checking entry for {symbol}: {e}")
+        logger.error(f"Entry check error {symbol}: {e}")
         return False

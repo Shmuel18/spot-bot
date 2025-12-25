@@ -51,7 +51,7 @@ async def get_total_balance(client: AsyncClient, config: dict, open_trades: dict
         
         # Add unrealized PnL from open trades
         if open_trades:
-            symbols = [trade['symbol'] for trade in open_trades]
+            symbols = list(open_trades.keys())
             ticker_stats = await client.get_ticker(symbols=symbols)
             prices = {item['symbol']: float(item['lastPrice']) for item in ticker_stats}
 

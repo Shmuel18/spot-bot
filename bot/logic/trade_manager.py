@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from binance import AsyncClient
 from binance.exceptions import BinanceAPIException
 from bot.database.database_service import insert_order, update_trade_status, update_trade_tp_order_id
@@ -7,229 +8,164 @@ from bot.utils.retry import retry
 
 logger = logging.getLogger(__name__)
 
+def get_filter(symbol_info: dict, filter_type: str) -> dict | None:
+    '''
+    Helper to find a specific filter by type in symbol_info.
+    '''
+    for f in symbol_info.get('filters', []):
+        if f['filterType'] == filter_type:
+            return f
+    return None
+
 @retry(max_retries=3, backoff_factor=2)
 async def get_available_balance(client: AsyncClient, asset: str = 'USDT') -> float:
-    '''
-    Retrieves the available balance for a given asset from Binance.
-    '''
     try:
         account = await client.get_account()
         balances = account['balances']
-        
         for balance in balances:
             if balance['asset'] == asset:
                 return float(balance['free'])
         return 0.0
-
     except BinanceAPIException as e:
         logger.error(f"Error getting available balance for {asset}: {e}")
         return 0.0
 
 @retry(max_retries=3, backoff_factor=2)
 async def get_total_balance(client: AsyncClient, config: dict, open_trades: dict) -> float:
-    '''
-    Retrieves the total balance in USDT equivalent from Binance, including unrealized PnL from open trades.
-    '''
     try:
         account = await client.get_account()
         balances = account['balances']
         total_balance = 0.0
         for balance in balances:
             asset = balance['asset']
-            free = float(balance['free'])
-            locked = float(balance['locked'])
-            total_asset = free + locked
+            total_asset = float(balance['free']) + float(balance['locked'])
             if asset == 'USDT':
                 total_balance += total_asset
-            elif total_asset > 0 and asset in config['balance_assets']:  # common pairs
+            elif total_asset > 0 and asset in config.get('balance_assets', []):
                 try:
                     ticker = await client.get_ticker(symbol=asset + 'USDT')
-                    price = float(ticker['lastPrice'])
-                    total_balance += total_asset * price
+                    total_balance += total_asset * float(ticker['lastPrice'])
                 except:
-                    pass  # ignore if no pair
+                    pass
         
-        # Add unrealized PnL from open trades
         if open_trades:
             symbols = list(open_trades.keys())
             ticker_stats = await client.get_ticker(symbols=symbols)
             prices = {item['symbol']: float(item['lastPrice']) for item in ticker_stats}
-
             for symbol, trade_details in open_trades.items():
-                symbol = symbol
                 current_price = prices.get(symbol, 0)
                 unrealized_pnl = (current_price - trade_details['avg_price']) * trade_details['quantity']
                 total_balance += unrealized_pnl
-
         return total_balance
-    except BinanceAPIException as e:
+    except Exception as e:
         logger.error(f"Error getting total balance: {e}")
         return 0.0
+
 async def get_symbol_info(client: AsyncClient, symbol: str) -> dict | None:
-    '''
-    Retrieves symbol information from Binance.
-    '''
     try:
         exchange_info = await client.get_exchange_info()
-        symbols_info = exchange_info['symbols']
-        
-        for symbol_info in symbols_info:
-            if symbol_info['symbol'] == symbol:
-                return symbol_info
+        for s in exchange_info['symbols']:
+            if s['symbol'] == symbol:
+                return s
         return None
-
-    except BinanceAPIException as e:
+    except Exception as e:
         logger.error(f"Error getting symbol info for {symbol}: {e}")
         return None
 
 async def round_quantity(quantity: float, step_size: str) -> float:
     try:
-        decimal_places = 0
-        step_size_decimal = float(step_size)
-        while step_size_decimal < 1:
-            step_size_decimal *= 10
-            decimal_places += 1
-        return round(quantity, decimal_places)
+        step_size_float = float(step_size)
+        precision = int(round(-math.log10(step_size_float)))
+        # Use floor to avoid "insufficient balance" errors
+        factor = 10 ** precision
+        return math.floor(quantity * factor) / factor
     except Exception as e:
         logger.error(f"Error rounding quantity: {e}")
         return 0.0
 
 async def round_price(price: float, tick_size: str) -> float:
     try:
-        decimal_places = 0
-        tick_size_decimal = float(tick_size)
-        while tick_size_decimal < 1:
-            tick_size_decimal *= 10
-            decimal_places += 1
-        return round(price, decimal_places)
+        tick_size_float = float(tick_size)
+        precision = int(round(-math.log10(tick_size_float)))
+        return round(price, precision)
     except Exception as e:
         logger.error(f"Error rounding price: {e}")
-        return 0.0
+        return price
 
 @retry(max_retries=3, backoff_factor=2)
-async def open_trade(client: AsyncClient, symbol: str, config: dict) ->  dict | None:
-    '''
-    Opens a trade for a given symbol.
-    '''
+async def open_trade(client: AsyncClient, symbol: str, config: dict) -> dict | None:
     symbol_info = await get_symbol_info(client, symbol)
-    if not symbol_info:
-        logger.error(f"Could not retrieve symbol info for {symbol}")
-        return None
+    if not symbol_info: return None
 
-    # Determine quantity (position_size_percent of available USDT balance)
     available_balance = await get_available_balance(client)
-    quantity = available_balance * (config['position_size_percent'] / 100)
+    quantity_usdt = available_balance * (config['position_size_percent'] / 100)
+    
+    ticker = await client.get_ticker(symbol=symbol)
+    price = float(ticker['lastPrice'])
+    quantity = quantity_usdt / price
 
-    # Apply precision guard (round quantity to step size)
-    step_size = symbol_info['filters'][2]['stepSize']
-    quantity = await round_quantity(quantity, step_size)
+    lot_filter = get_filter(symbol_info, 'LOT_SIZE')
+    if lot_filter:
+        quantity = await round_quantity(quantity, lot_filter['stepSize'])
 
-    # Place market buy order
     try:
-        if config['dry_run']:
-            logger.info(f"DRY RUN: Simulating market buy order for {symbol} quantity {quantity}")
-            # Simulate a ticker price for dry run
-            ticker = await client.get_ticker(symbol=symbol)
-            avg_price = float(ticker['lastPrice'])
-            return {"order": {"orderId": "DRY_RUN_ID", "status": "FILLED"}, "quantity": quantity, "avg_price": avg_price}
-        else:
-            order = await client.order_market_buy(symbol=symbol, quantity=quantity)
-            logger.info(f"Placed market buy order for {symbol}: {order}")
-
-            # Get current price for take profit calculation
-            ticker = await client.get_ticker(symbol=symbol)
-            avg_price = float(ticker['lastPrice'])
-
-            return {"order": order, "quantity": quantity, "avg_price": avg_price}
-    except BinanceAPIException as e:
+        if config.get('dry_run'):
+            logger.info(f"DRY RUN: Buy {symbol} qty {quantity}")
+            return {"order": {"orderId": "DRY_RUN"}, "quantity": quantity, "avg_price": price}
+        
+        order = await client.order_market_buy(symbol=symbol, quantity=quantity)
+        return {"order": order, "quantity": quantity, "avg_price": price}
+    except Exception as e:
         logger.error(f"Error opening trade for {symbol}: {e}")
         return None
 
 @retry(max_retries=3, backoff_factor=2)
 async def place_take_profit_order(client: AsyncClient, symbol: str, quantity: float, avg_price: float, config: dict) -> dict | None:
-    '''
-    Places a take profit order for a given symbol.
-    '''
     try:
-        # Calculate take profit price
-        tp_percent = config['tp_percent'] / 100
-        tp_price = avg_price * (1 + tp_percent)
-
-        # Get symbol info for tick size
+        tp_price = avg_price * (1 + (config['tp_percent'] / 100))
         symbol_info = await get_symbol_info(client, symbol)
-        if symbol_info:
-            tick_size = symbol_info['filters'][0]['tickSize']
-            tp_price = await round_price(tp_price, tick_size)
+        price_filter = get_filter(symbol_info, 'PRICE_FILTER')
+        if price_filter:
+            tp_price = await round_price(tp_price, price_filter['tickSize'])
 
-        # Place limit sell order
-        if config['dry_run']:
-            logger.info(f"DRY RUN: Simulating limit sell order for {symbol} quantity {quantity} at price {tp_price}")
-            return {"orderId": "DRY_RUN_ID", "status": "FILLED", "price": tp_price, "origQty": quantity}
-        else:
-            order = await client.order_limit_sell(symbol=symbol, quantity=quantity, price=tp_price)
-            logger.info(f"Placed take profit order for {symbol}: {order}")
-
-            return order
-
+        if config.get('dry_run'):
+            return {"orderId": "DRY_TP", "status": "FILLED", "price": tp_price, "origQty": quantity}
+        
+        return await client.order_limit_sell(symbol=symbol, quantity=quantity, price=tp_price)
     except Exception as e:
-        logger.error(f"Error placing take profit order for {symbol}: {e}")
+        logger.error(f"Error placing TP for {symbol}: {e}")
         return None
 
 @retry(max_retries=3, backoff_factor=2)
 async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: float, current_avg_price: float, trade_id: int, tp_order_id: str, dca_count: int) -> dict | None:
-    '''
-    Performs Dollar-Cost Averaging (DCA) for a given symbol.
-    Returns a dict with tp_order, new_avg_price, new_quantity if successful.
-    '''
     try:
-        # Cancel existing take profit order
-        logger.info(f"Cancelling existing take profit order {tp_order_id} for {symbol}")
-        if not config['dry_run']:
-            try:
-                await client.cancel_order(symbol=symbol, orderId=tp_order_id)
-            except BinanceAPIException as e:
-                logger.error(f"Error cancelling take profit order {tp_order_id} for {symbol}: {e}")
+        if not config.get('dry_run'):
+            await client.cancel_order(symbol=symbol, orderId=tp_order_id)
 
-        # Get symbol info
         symbol_info = await get_symbol_info(client, symbol)
-        if not symbol_info:
-            logger.error(f"Could not retrieve symbol info for {symbol}")
-            return None
-
-        # Determine DCA quantity
-        dca_scale = config['dca_scales'][dca_count] if dca_count < len(config['dca_scales']) else config['dca_scales'][-1]
+        dca_scale = config['dca_scales'][min(dca_count, len(config['dca_scales'])-1)]
         dca_quantity = current_quantity * dca_scale
 
-        # Apply precision guard (round quantity to step size)
-        step_size = symbol_info['filters'][2]['stepSize']
-        dca_quantity = await round_quantity(dca_quantity, step_size)
+        lot_filter = get_filter(symbol_info, 'LOT_SIZE')
+        if lot_filter:
+            dca_quantity = await round_quantity(dca_quantity, lot_filter['stepSize'])
 
-        # Place market buy order
-        if config['dry_run']:
-            logger.info(f"DRY RUN: Simulating DCA market buy order for {symbol} quantity {dca_quantity}")
-            dca_order = {"orderId": "DRY_RUN_DCA_ID", "status": "FILLED"}
+        if config.get('dry_run'):
+            dca_order = {"orderId": "DRY_DCA", "status": "FILLED"}
         else:
             dca_order = await client.order_market_buy(symbol=symbol, quantity=dca_quantity)
-        logger.info(f"Placed DCA order for {symbol}: {dca_order}")
+
         await insert_order(trade_id, dca_order['orderId'], 'DCA', 0, dca_quantity, dca_order['status'])
-
-        # Calculate new average price
+        
         ticker = await client.get_ticker(symbol=symbol)
-        current_price = float(ticker['lastPrice'])
-        new_avg_price = (current_avg_price * current_quantity + current_price * dca_quantity) / (current_quantity + dca_quantity)
-        new_quantity = current_quantity + dca_quantity
+        curr_price = float(ticker['lastPrice'])
+        new_qty = current_quantity + dca_quantity
+        new_avg = ((current_avg_price * current_quantity) + (curr_price * dca_quantity)) / new_qty
 
-        # Place new take profit order
-        tp_order = await place_take_profit_order(client, symbol, new_quantity, new_avg_price, config)
+        tp_order = await place_take_profit_order(client, symbol, new_qty, new_avg, config)
         if tp_order:
-            logger.info(f"Placed new take profit order for {symbol}: {tp_order}")
-            await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
             await update_trade_tp_order_id(trade_id, tp_order['orderId'])
-            return {'tp_order': tp_order, 'new_avg_price': new_avg_price, 'new_quantity': new_quantity}
-        else:
-            logger.error(f"Failed to place new take profit order for {symbol}")
-            return None
-
-    except BinanceAPIException as e:
-        logger.error(f"Error performing DCA for {symbol}: {e}")
-        return None
+            return {'tp_order': tp_order, 'new_avg_price': new_avg, 'new_quantity': new_qty}
+    except Exception as e:
+        logger.error(f"DCA Error for {symbol}: {e}")
+    return None

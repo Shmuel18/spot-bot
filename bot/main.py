@@ -50,7 +50,7 @@ async def main():
         await create_tables()
 
         # Get USDT pairs
-        usdt_pairs = await get_usdt_pairs(client)
+        usdt_pairs = await get_usdt_pairs(client, config)
 
         # Filter by volume
         min_volume = config['min_24h_volume']
@@ -59,7 +59,7 @@ async def main():
         logging.info(f"Tradable symbols: {symbols}")
 
         # Initialize variables for daily loss limit
-        initial_balance = 1000  # TODO: Get initial balance from account or DB
+        initial_balance = await get_total_balance(client)
         daily_loss_limit = config['daily_loss_limit'] / 100
         daily_initial_equity = initial_balance
         daily_loss_limit_reached = False
@@ -111,33 +111,34 @@ async def main():
                     daily_report = f"Daily report:\nInitial equity: {daily_initial_equity}\nTotal equity: {total_equity}" # Removed extra parenthesis
                     await telegram_service.send_message(telegram_chat_id, daily_report)
 
-                if not daily_loss_limit_reached and symbol not in open_trades and await check_entry_conditions(client, symbol, config):
-                    logging.info(f"Entry conditions met for {symbol}")
-                    # Open trade
-                    trade_details = await open_trade(client, symbol, config)
-                    if trade_details:
-                        logging.info(f"Trade opened for {symbol}: {trade_details}")
+                for symbol in symbols:
+                    if not daily_loss_limit_reached and symbol not in open_trades and await check_entry_conditions(client, symbol, config):
+                        logging.info(f"Entry conditions met for {symbol}")
+                        # Open trade
+                        trade_details = await open_trade(client, symbol, config)
+                        if trade_details:
+                            logging.info(f"Trade opened for {symbol}: {trade_details}")
                             
-                        trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
-                        open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': None} # fixed syntax here.
+                            trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
+                            open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': None} # fixed syntax here.
 
-                        # Send Telegram notification
-                        message = f"<b>Trade opened</b>\nSymbol: {symbol}\nPrice: {trade_details['avg_price']}\nQuantity: {trade_details['quantity']}" #Fixed f-string
-                        await telegram_service.send_message(telegram_chat_id, message)
+                            # Send Telegram notification
+                            message = f"<b>Trade opened</b>\nSymbol: {symbol}\nPrice: {trade_details['avg_price']}\nQuantity: {trade_details['quantity']}" #Fixed f-string
+                            await telegram_service.send_message(telegram_chat_id, message)
 
-                        # Place take profit order
-                        tp_order = await place_take_profit_order(client, symbol, trade_details["quantity"], trade_details["avg_price"], config)
-                        if tp_order:
-                            logging.info(f"Take profit order placed for {symbol}: {tp_order}")
-                            await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
-                            await update_trade_tp_order_id(trade_id, tp_order['orderId'])
-                            open_trades[symbol]['tp_order_id'] = tp_order['orderId']
+                            # Place take profit order
+                            tp_order = await place_take_profit_order(client, symbol, trade_details["quantity"], trade_details["avg_price"], config)
+                            if tp_order:
+                                logging.info(f"Take profit order placed for {symbol}: {tp_order}")
+                                await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
+                                await update_trade_tp_order_id(trade_id, tp_order['orderId'])
+                                open_trades[symbol]['tp_order_id'] = tp_order['orderId']
+                            else:
+                                logging.error(f"Failed to place take profit order for {symbol}")
+                                await telegram_service.send_message(telegram_chat_id, f"Failed to place take profit order for {symbol}")
                         else:
-                            logging.error(f"Failed to place take profit order for {symbol}")
-                            await telegram_service.send_message(telegram_chat_id, f"Failed to place take profit order for {symbol}")
-                    else:
-                        logging.error(f"Failed to open trade for {symbol}")
-                        await telegram_service.send_message(telegram_chat_id, f"Failed to open trade for {symbol}")
+                            logging.error(f"Failed to open trade for {symbol}")
+                            await telegram_service.send_message(telegram_chat_id, f"Failed to open trade for {symbol}")
 
                     elif symbol in open_trades and await check_dca_conditions(client, symbol, config, open_trades[symbol]["avg_price"]):
                         logging.info(f"DCA conditions met for {symbol}")

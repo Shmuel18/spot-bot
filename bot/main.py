@@ -66,7 +66,7 @@ async def main():
 
         # Get open trades from the database
         open_trades_db = await get_open_trades()
-        open_trades = {trade['symbol']: {"quantity": trade['base_qty'], "avg_price": trade['avg_price'], 'trade_id': trade['id'], 'tp_order_id': trade['tp_order_id']} for trade in open_trades_db}
+        open_trades = {trade['symbol']: {"quantity": trade['base_qty'], "avg_price": trade['avg_price'], 'trade_id': trade['id'], 'tp_order_id': trade['tp_order_id'], 'dca_count': trade['dca_count']} for trade in open_trades_db}
         logging.info(f"Loaded {len(open_trades)} open trades from the database.")
 
         # Recover open trades
@@ -128,7 +128,7 @@ async def main():
                             logging.info(f"Trade opened for {symbol}: {trade_details}")
                             
                             trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
-                            open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': None} # fixed syntax here.
+                            open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': None, 'dca_count': 0} # fixed syntax here.
 
                             # Send Telegram notification
                             message = f"<b>Trade opened</b>\nSymbol: {symbol}\nPrice: {trade_details['avg_price']}\nQuantity: {trade_details['quantity']}" #Fixed f-string

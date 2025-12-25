@@ -1,10 +1,9 @@
 # config.yaml
-
 timeframe: 15m
 dip_threshold: -3.0
 sma_length: 150
 tp_percent: 2.5
-dca_trigger: -3.5
+dca_trigger: 3.5 # ערך חיובי - מייצג אחוז ירידה
 dca_scales: [1.0, 1.5, 2.0]
 max_positions: 5
 min_24h_volume: 5000000

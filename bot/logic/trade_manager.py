@@ -132,7 +132,7 @@ async def place_take_profit_order(client: AsyncClient, symbol: str, quantity: fl
         return None
 
 @retry(max_retries=3, backoff_factor=2)
-async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: float, current_avg_price: float, trade_id: int, tp_order_id: str) -> dict | None:
+async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: float, current_avg_price: float, trade_id: int, tp_order_id: str, dca_count: int) -> dict | None:
     '''
     Performs Dollar-Cost Averaging (DCA) for a given symbol.
     '''
@@ -150,8 +150,8 @@ async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: 
             logger.error(f"Could not retrieve symbol info for {symbol}")
             return None
 
-        # Determine DCA quantity (scale = 1.0 for the first DCA)
-        dca_scale = config['dca_scales'][0]
+        # Determine DCA quantity
+        dca_scale = config['dca_scales'][dca_count] if dca_count < len(config['dca_scales']) else config['dca_scales'][-1]
         dca_quantity = current_quantity * dca_scale
 
         # Apply precision guard (round quantity to step size)

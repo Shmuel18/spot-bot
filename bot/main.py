@@ -79,6 +79,7 @@ async def main():
                         if tp_order['status'] == 'FILLED':
                             logging.info(f"Trade {trade_data['trade_id']} for {symbol} was closed with profit during downtime.")
                             await update_trade_status(trade_data['trade_id'], TRADE_STATE_CLOSED_PROFIT)
+                            del open_trades[symbol]  # Remove from memory
                         elif tp_order['status'] == 'CANCELED':
                             logging.info(f"Take profit order {tp_order_id} for {symbol} was canceled during downtime.")
                             await update_trade_status(trade_data['trade_id'], TRADE_STATE_OPEN)
@@ -87,6 +88,7 @@ async def main():
                     else:
                         logging.warning(f"Could not retrieve take profit order {tp_order_id} for {symbol}. Assuming it was filled.")
                         await update_trade_status(trade_data['trade_id'], TRADE_STATE_CLOSED_PROFIT)
+                        del open_trades[symbol]  # Remove from memory
             except Exception as e:
                 logging.error(f"Error recovering trade {trade_data['trade_id']} for {symbol}: {e}")
 
@@ -110,6 +112,12 @@ async def main():
                     total_equity = await calculate_total_equity(client, open_trades, initial_balance)
                     daily_report = f"Daily report:\nInitial equity: {daily_initial_equity}\nTotal equity: {total_equity}" # Removed extra parenthesis
                     await telegram_service.send_message(telegram_chat_id, daily_report)
+
+                    # Refresh symbol list
+                    usdt_pairs = await get_usdt_pairs(client, config)
+                    min_volume = config['min_24h_volume']
+                    symbols = await filter_by_volume(client, usdt_pairs, min_volume)
+                    logging.info(f"Refreshed tradable symbols: {symbols}")
 
                 for symbol in symbols:
                     if not daily_loss_limit_reached and symbol not in open_trades and await check_entry_conditions(client, symbol, config):
@@ -143,7 +151,7 @@ async def main():
                     elif symbol in open_trades and await check_dca_conditions(client, symbol, config, open_trades[symbol]["avg_price"]):
                         logging.info(f"DCA conditions met for {symbol}")
                         # Perform DCA
-                        tp_order = await dca(client, symbol, config, open_trades[symbol]["quantity"], open_trades[symbol]["avg_price"], open_trades[symbol]['trade_id'], open_trades[symbol]['tp_order_id'])
+                        tp_order = await dca(client, symbol, config, open_trades[symbol]["quantity"], open_trades[symbol]["avg_price"], open_trades[symbol]['trade_id'], open_trades[symbol]['tp_order_id'], open_trades[symbol]['dca_count'])
                         if tp_order:
                             logging.info(f"DCA performed for {symbol}: {tp_order}")
 
@@ -162,7 +170,8 @@ async def main():
                                 open_trades[symbol]["quantity"] = await round_quantity(open_trades[symbol]["quantity"], step_size)
 
                             # Update DB
-                            await update_trade_dca(open_trades[symbol]['trade_id'], new_avg_price, open_trades[symbol]["quantity"], 1)  # increment dca_count
+                            await update_trade_dca(open_trades[symbol]['trade_id'], new_avg_price, open_trades[symbol]["quantity"], open_trades[symbol]['dca_count'] + 1)  # increment dca_count
+                            open_trades[symbol]['dca_count'] += 1  # update in memory
 
                             # Send Telegram notification
                             message = f"<b>DCA performed</b>\nSymbol: {symbol}\nNew average price: {open_trades[symbol]['avg_price']}\nNew quantity: {open_trades[symbol]['quantity']}"

@@ -1,10 +1,11 @@
 import asyncio
 import logging
 import aiosqlite
+import os
 
 logger = logging.getLogger(__name__)
 
-DATABASE_FILE = 'bot/database/trades.db'
+DATABASE_FILE = os.getenv('DATABASE_FILE', 'bot/database/trades.db')
 
 async def create_tables():
     async with aiosqlite.connect(DATABASE_FILE) as db:
@@ -72,6 +73,17 @@ async def update_trade_tp_order_id(trade_id: int, tp_order_id: str):
         await db.commit()
     logger.info(f"Updated trade {trade_id} tp_order_id to {tp_order_id}.")
 
+async def update_trade_dca(trade_id: int, new_avg_price: float, new_qty: float, dca_increment: int):
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        await db.execute(
+            '''
+            UPDATE trades SET avg_price = ?, base_qty = ?, dca_count = dca_count + ? WHERE id = ?
+            ''',
+            (new_avg_price, new_qty, dca_increment, trade_id)
+        )
+        await db.commit()
+    logger.info(f"Updated trade {trade_id} with new avg_price {new_avg_price}, qty {new_qty}, dca_count +{dca_increment}.")
+
 async def insert_order(trade_id: int, binance_id: str, type: str, price: float, qty: float, status: str):
     async with aiosqlite.connect(DATABASE_FILE) as db:
         await db.execute(
@@ -86,20 +98,21 @@ async def insert_order(trade_id: int, binance_id: str, type: str, price: float, 
 
 async def get_open_trades():
     async with aiosqlite.connect(DATABASE_FILE) as db:
+        db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM trades WHERE status NOT IN ('CLOSED_PROFIT', 'CLOSED_ABORTED')") as cursor:
             rows = await cursor.fetchall()
         trades = []
         for row in rows:
             trades.append({
-                'id': row[0],
-                'symbol': row[1],
-                'status': row[2],
-                'avg_price': row[3],
-                'base_qty': row[4],
-                'quote_spent': row[5],
-                'dca_count': row[6],
-                'tp_order_id': row[7],
-                'created_at': row[8],
+                'id': row['id'],
+                'symbol': row['symbol'],
+                'status': row['status'],
+                'avg_price': row['avg_price'],
+                'base_qty': row['base_qty'],
+                'quote_spent': row['quote_spent'],
+                'dca_count': row['dca_count'],
+                'tp_order_id': row['tp_order_id'],
+                'created_at': row['created_at'],
             })
     logger.info(f"Retrieved {len(trades)} open trades from the database.")
     return trades

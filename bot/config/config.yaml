@@ -13,3 +13,4 @@ cooldown: 30
 daily_loss_limit: 5
 exposure_total_max: 40
 exposure_symbol_max: 15
+dry_run: true

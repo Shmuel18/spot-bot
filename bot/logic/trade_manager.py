@@ -60,6 +60,13 @@ async def open_trade(client: AsyncClient, symbol: str, config: dict) ->  dict | 
     '''
     Opens a trade for a given symbol.
     '''
+    if config.get('dry_run', False):
+        logger.info(f"Dry run: Simulating trade open for {symbol}")
+        ticker = await client.get_ticker(symbol=symbol)
+        avg_price = float(ticker['lastPrice'])
+        quantity = 0.01  # dummy
+        return {"order": {"orderId": "dry_run"}, "quantity": quantity, "avg_price": avg_price}
+
     symbol_info = await get_symbol_info(client, symbol)
     if not symbol_info:
         logger.error(f"Could not retrieve symbol info for {symbol}")
@@ -73,10 +80,10 @@ async def open_trade(client: AsyncClient, symbol: str, config: dict) ->  dict | 
     step_size = symbol_info['filters'][2]['stepSize']
     quantity = await round_quantity(quantity, step_size)
 
-        # Place aggressive limit buy order
+        # Place market buy order
     try:
-        order = await client.order_limit_buy(symbol=symbol, quantity=quantity, price=0)
-        logger.info(f"Placed aggressive limit buy order for {symbol}: {order}")
+        order = await client.order_market_buy(symbol=symbol, quantity=quantity)
+        logger.info(f"Placed market buy order for {symbol}: {order}")
 
         # Get current price for take profit calculation
         ticker = await client.get_ticker(symbol=symbol)
@@ -93,6 +100,12 @@ async def place_take_profit_order(client: AsyncClient, symbol: str, quantity: fl
     '''
     Places a take profit order for a given symbol.
     '''
+    if config.get('dry_run', False):
+        logger.info(f"Dry run: Simulating take profit order for {symbol}")
+        tp_percent = config['tp_percent'] / 100
+        tp_price = avg_price * (1 + tp_percent)
+        return {"orderId": "dry_run_tp", "price": tp_price, "origQty": quantity, "status": "SIMULATED"}
+
     try:
         # Calculate take profit price
         tp_percent = config['tp_percent'] / 100
@@ -113,6 +126,13 @@ async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: 
     '''
     Performs Dollar-Cost Averaging (DCA) for a given symbol.
     '''
+    if config.get('dry_run', False):
+        logger.info(f"Dry run: Simulating DCA for {symbol}")
+        ticker = await client.get_ticker(symbol=symbol)
+        current_price = float(ticker['lastPrice'])
+        new_avg_price = (current_avg_price * current_quantity + current_price * (current_quantity * config['dca_scales'][0])) / (current_quantity + current_quantity * config['dca_scales'][0])
+        return {"orderId": "dry_run_dca", "price": new_avg_price, "origQty": current_quantity * config['dca_scales'][0], "status": "SIMULATED"}
+
     try:
         # Cancel existing take profit order
         logger.info(f"Cancelling existing take profit order {tp_order_id} for {symbol}")
@@ -135,8 +155,8 @@ async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: 
         step_size = symbol_info['filters'][2]['stepSize']
         dca_quantity = await round_quantity(dca_quantity, step_size)
 
-        # Place aggressive limit buy order
-        dca_order = await client.order_limit_buy(symbol=symbol, quantity=dca_quantity, price=0)
+        # Place market buy order
+        dca_order = await client.order_market_buy(symbol=symbol, quantity=dca_quantity)
         logger.info(f"Placed DCA order for {symbol}: {dca_order}")
         await insert_order(trade_id, dca_order['orderId'], 'DCA', 0, dca_quantity, dca_order['status'])
 
@@ -156,6 +176,6 @@ async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: 
 
         return tp_order
 
-    except BinanceAPIException as e):
+    except BinanceAPIException as e:
         logger.error(f"Error performing DCA for {symbol}: {e}")
         return None

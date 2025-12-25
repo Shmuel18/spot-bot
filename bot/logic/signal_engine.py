@@ -4,6 +4,42 @@ from binance import AsyncClient
 
 logger = logging.getLogger(__name__)
 
+# Cache for SMA calculations
+sma_cache = {}
+
+async def get_sma_150(client: AsyncClient, symbol: str):
+    '''
+    Gets the SMA(150) for a symbol, using cache if available.
+    '''
+    if symbol in sma_cache:
+        # Update with latest candle
+        try:
+            latest_kline = await client.get_historical_klines(symbol, '15m', '1 minutes ago')
+            if latest_kline:
+                latest_close = float(latest_kline[0][4])
+                # Simple update: replace oldest with latest (approximation)
+                cached_klines = sma_cache[symbol]['klines']
+                cached_klines.pop(0)
+                cached_klines.append(latest_close)
+                sma = sum(cached_klines) / len(cached_klines)
+                sma_cache[symbol]['sma'] = sma
+                return sma
+        except Exception as e:
+            logger.error(f"Error updating SMA cache for {symbol}: {e}")
+    
+    # Fetch full 150 candles
+    try:
+        klines_150 = await client.get_historical_klines(symbol, '15m', '150 * 15 minutes ago')
+        if not klines_150 or len(klines_150) < 150:
+            return None
+        closes = [float(kline[4]) for kline in klines_150]
+        sma = sum(closes) / len(closes)
+        sma_cache[symbol] = {'klines': closes, 'sma': sma}
+        return sma
+    except Exception as e:
+        logger.error(f"Error fetching SMA for {symbol}: {e}")
+        return None
+
 async def check_entry_conditions(client: AsyncClient, symbol: str, config: dict):
     '''
     Checks the entry conditions for a given symbol.
@@ -20,11 +56,10 @@ async def check_entry_conditions(client: AsyncClient, symbol: str, config: dict)
         candle_change = (close_price - open_price) / open_price * 100
 
         # Get the SMA(150)
-        klines_150 = await client.get_historical_klines(symbol, '15m', '150 * 15 minutes ago')
-        if not klines_150 or len(klines_150) < 150:
-            logger.warning(f"Could not retrieve enough klines for SMA(150) for {symbol}")
+        sma_150 = await get_sma_150(client, symbol)
+        if sma_150 is None:
+            logger.warning(f"Could not retrieve SMA(150) for {symbol}")
             return False
-        sma_150 = sum([float(kline[4]) for kline in klines_150]) / len(klines_150)
 
         # Check conditions
         dip_threshold = config['dip_threshold']

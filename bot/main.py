@@ -10,7 +10,7 @@ from bot.logic.signal_engine import check_entry_conditions
 from bot.logic.trade_manager import open_trade, place_take_profit_order, dca
 from bot.logic.dca_engine import check_dca_conditions
 from bot.risk.risk_manager import calculate_total_equity
-from bot.database.database_service import create_tables, insert_trade, insert_order, get_open_trades, update_trade_tp_order_id, update_trade_status
+from bot.database.database_service import create_tables, insert_trade, insert_order, get_open_trades, update_trade_tp_order_id, update_trade_status, update_trade_dca
 from bot.notifications.telegram_service import TelegramService
 
 # Load environment variables from .env file
@@ -50,7 +50,7 @@ async def main():
         await create_tables()
 
         # Get USDT pairs
-        usdt_pairs = await get_usdt_pairs(client)
+        usdt_pairs = await get_usdt_pairs(client, config)
 
         # Filter by volume
         min_volume = config['min_24h_volume']
@@ -107,71 +107,64 @@ async def main():
                     last_day = current_day
 
                     # Send daily report
-                    daily_report = f"Daily report:\nInitial equity: {daily_initial_equity}\nTotal equity: {await calculate_total_equity(client, open_trades, initial_balance)}"
+                    total_equity = await calculate_total_equity(client, open_trades, initial_balance)
+                    daily_report = f"Daily report:\nInitial equity: {daily_initial_equity}\nTotal equity: {total_equity}" # Removed extra parenthesis
                     await telegram_service.send_message(telegram_chat_id, daily_report)
 
-                if not daily_loss_limit_reached:
-                    # Calculate total equity
-                    total_equity = await calculate_total_equity(client, open_trades, initial_balance)
+                if not daily_loss_limit_reached and symbol not in open_trades and await check_entry_conditions(client, symbol, config):
+                    logging.info(f"Entry conditions met for {symbol}")
+                    # Open trade
+                    trade_details = await open_trade(client, symbol, config)
+                    if trade_details:
+                        logging.info(f"Trade opened for {symbol}: {trade_details}")
+                        message = f"<b>Trade opened</b>\nSymbol: {symbol}\nPrice: {trade_details['avg_price']}\nQuantity: {trade_details['quantity']}"
+                        trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
+                        open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': None}
 
-                    # Check daily loss limit
-                    daily_loss = (daily_initial_equity - total_equity) / daily_initial_equity
-                    if daily_loss >= daily_loss_limit:
-                        logging.warning(f"Daily loss limit reached: daily_loss={daily_loss}, daily_loss_limit={daily_loss_limit}")
-                        daily_loss_limit_reached = True
-                        await telegram_service.send_message(telegram_chat_id, "Daily loss limit reached. Stopping new trades.")
+                        # Send Telegram notification
+                        await telegram_service.send_message(telegram_chat_id, message)
 
-                for symbol in symbols:
-                    if daily_loss_limit_reached and symbol not in open_trades and await check_entry_conditions(client, symbol, config):
-                        logging.info(f"Entry conditions met for {symbol}")
-                        # Open trade
-                        trade_details = await open_trade(client, symbol, config)
-                        if trade_details:
-                            logging.info(f"Trade opened for {symbol}: {trade_details}")
-                            trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
-                            open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': None}
-
-                            # Send Telegram notification
-                            message = f"<b>Trade opened</b>\nSymbol: {symbol}\nPrice: {trade_details['avg_price']}\nQuantity: {trade_details['quantity']}"
-                            await telegram_service.send_message(telegram_chat_id, message)
-
-                            # Place take profit order
-                            tp_order = await place_take_profit_order(client, symbol, trade_details["quantity"], trade_details["avg_price"], config)
-                            if tp_order:
-                                logging.info(f"Take profit order placed for {symbol}: {tp_order}")
-                                await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
-                                await update_trade_tp_order_id(trade_id, tp_order['orderId'])
-                                open_trades[symbol]['tp_order_id'] = tp_order['orderId']
-                            else:
-                                logging.error(f"Failed to place take profit order for {symbol}")
-                                await telegram_service.send_message(telegram_chat_id, f"Failed to place take profit order for {symbol}")
-                        else:
-                            logging.error(f"Failed to open trade for {symbol}")
-                            await telegram_service.send_message(telegram_chat_id, f"Failed to open trade for {symbol}")
-
-                    elif symbol in open_trades and await check_dca_conditions(client, symbol, config, open_trades[symbol]["avg_price"]):
-                        logging.info(f"DCA conditions met for {symbol}")
-                        # Perform DCA
-                        tp_order = await dca(client, symbol, config, open_trades[symbol]["quantity"], open_trades[symbol]["avg_price"], open_trades[symbol]['trade_id'], open_trades[symbol]['tp_order_id'])
+                        # Place take profit order
+                        tp_order = await place_take_profit_order(client, symbol, trade_details["quantity"], trade_details["avg_price"], config)
                         if tp_order:
-                            logging.info(f"DCA performed for {symbol}: {tp_order}")
-
-                            # Send Telegram notification
-                            message = f"<b>DCA performed</b>\nSymbol: {symbol}\nNew average price: {open_trades[symbol]['avg_price']}\nNew quantity: {open_trades[symbol]['quantity']}"
-                            await telegram_service.send_message(telegram_chat_id, message)
-
-                            # Update trade details with the new values
-                            ticker = await client.get_ticker(symbol=symbol)
-                            current_price = float(ticker['lastPrice'])
-                            new_avg_price = (open_trades[symbol]["avg_price"] * open_trades[symbol]["quantity"] + current_price * trade_details["quantity"]* config['dca_scales'][0]) / (open_trades[symbol]["quantity"] + trade_details["quantity"]* config['dca_scales'][0])
-                            open_trades[symbol]["avg_price"] = new_avg_price
-                            open_trades[symbol]["quantity"] = open_trades[symbol]["quantity"] + trade_details["quantity"]* config['dca_scales'][0]
+                            logging.info(f"Take profit order placed for {symbol}: {tp_order}")
+                            await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
+                            await update_trade_tp_order_id(trade_id, tp_order['orderId'])
+                            open_trades[symbol]['tp_order_id'] = tp_order['orderId']
                         else:
-                            logging.error(f"Failed to perform DCA for {symbol}")
-                            await telegram_service.send_message(telegram_chat_id, f"Failed to perform DCA for {symbol}")
-
+                            logging.error(f"Failed to place take profit order for {symbol}")
+                            await telegram_service.send_message(telegram_chat_id, f"Failed to place take profit order for {symbol}")
                     else:
-                        logging.debug(f"No action for {symbol}")
+                        logging.error(f"Failed to open trade for {symbol}")
+                        await telegram_service.send_message(telegram_chat_id, f"Failed to open trade for {symbol}")
+
+                elif symbol in open_trades and await check_dca_conditions(client, symbol, config, open_trades[symbol]["avg_price"]):
+                    logging.info(f"DCA conditions met for {symbol}")
+                    # Perform DCA
+                    tp_order = await dca(client, symbol, config, open_trades[symbol]["quantity"], open_trades[symbol]["avg_price"], open_trades[symbol]['trade_id'], open_trades[symbol]['tp_order_id'])
+                    if tp_order:
+                        logging.info(f"DCA performed for {symbol}: {tp_order}")
+
+                        # Update trade details with the new values
+                        ticker = await client.get_ticker(symbol=symbol)
+                        current_price = float(ticker['lastPrice'])
+                        dca_quantity = open_trades[symbol]["quantity"] * config['dca_scales'][0]
+                        new_avg_price = (open_trades[symbol]["avg_price"] * open_trades[symbol]["quantity"] + current_price * dca_quantity) / (open_trades[symbol]["quantity"] + dca_quantity)
+                        open_trades[symbol]["avg_price"] = new_avg_price
+                        open_trades[symbol]["quantity"] += dca_quantity
+
+                        # Update DB
+                        await update_trade_dca(open_trades[symbol]['trade_id'], new_avg_price, open_trades[symbol]["quantity"], 1)  # increment dca_count
+
+                        # Send Telegram notification
+                        message = f"<b>DCA performed</b>\nSymbol: {symbol}\nNew average price: {open_trades[symbol]['avg_price']}\nNew quantity: {open_trades[symbol]['quantity']}"
+                        await telegram_service.send_message(telegram_chat_id, message)
+                    else:
+                        logging.error(f"Failed to perform DCA for {symbol}")
+                        await telegram_service.send_message(telegram_chat_id, f"Failed to perform DCA for {symbol}")
+
+                else:
+                    logging.debug(f"No action for {symbol}")
 
                 consecutive_errors = 0  # Reset error counter if no errors occurred
                 await asyncio.sleep(60)  # Check every 60 seconds
@@ -191,5 +184,5 @@ async def main():
 
         await client.close_connection()
 
-    except Exception as e):
+    except Exception as e:
         logging.error(f"An error occurred: {e}")

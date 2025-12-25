@@ -6,7 +6,7 @@ from bot.utils.retry import retry
 logger = logging.getLogger(__name__)
 
 @retry(max_retries=3, backoff_factor=2)
-async def get_usdt_pairs(client: AsyncClient):
+async def get_usdt_pairs(client: AsyncClient, config: dict):
     '''
     Retrieves a list of USDT pairs from Binance, filtering out stablecoins and leveraged tokens.
     '''
@@ -14,18 +14,11 @@ async def get_usdt_pairs(client: AsyncClient):
         exchange_info = await client.get_exchange_info()
         symbols = exchange_info['symbols']
         
+        blacklist = config.get('blacklist', [])
         usdt_pairs = [
             symbol['symbol'] for symbol in symbols
             if symbol['quoteAsset'] == 'USDT'
-            and 'USDC' not in symbol['symbol']
-            and 'FDUSD' not in symbol['symbol']
-            and 'TUSD' not in symbol['symbol']
-            and 'DAI' not in symbol['symbol']
-            and 'USDP' not in symbol['symbol']
-            and 'UP' not in symbol['symbol']
-            and 'DOWN' not in symbol['symbol']
-            and 'BULL' not in symbol['symbol']
-            and 'BEAR' not in symbol['symbol']
+            and not any(blacklisted in symbol['symbol'] for blacklisted in blacklist)
         ]
         
         logger.info(f"Found {len(usdt_pairs)} USDT pairs.")

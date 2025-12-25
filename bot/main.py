@@ -119,6 +119,15 @@ async def main():
                     symbols = await filter_by_volume(client, usdt_pairs, min_volume)
                     logging.info(f"Refreshed tradable symbols: {symbols}")
 
+                # Check daily loss limit in real-time
+                if not daily_loss_limit_reached:
+                    total_equity = await calculate_total_equity(client, open_trades, initial_balance)
+                    loss_ratio = (daily_initial_equity - total_equity) / daily_initial_equity if daily_initial_equity > 0 else 0
+                    if loss_ratio >= daily_loss_limit:
+                        daily_loss_limit_reached = True
+                        logging.warning(f"Daily loss limit reached: {loss_ratio * 100:.2f}%")
+                        await telegram_service.send_message(telegram_chat_id, f"Daily loss limit reached: {loss_ratio * 100:.2f}%")
+
                 for symbol in symbols:
                     if not daily_loss_limit_reached and symbol not in open_trades and await check_entry_conditions(client, symbol, config):
                         logging.info(f"Entry conditions met for {symbol}")

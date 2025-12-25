@@ -1,3 +1,5 @@
+
+
 import asyncio
 import logging
 import yaml
@@ -9,9 +11,12 @@ from bot.exchange.binance_service import get_usdt_pairs, filter_by_volume, get_o
 from bot.logic.signal_engine import check_entry_conditions
 from bot.logic.trade_manager import open_trade, place_take_profit_order, dca, get_total_balance, get_symbol_info, round_quantity, round_price
 from bot.logic.dca_engine import check_dca_conditions
-from bot.risk.risk_manager import calculate_total_equity
+
 from bot.database.database_service import create_tables, insert_trade, insert_order, get_open_trades, update_trade_tp_order_id, update_trade_status, update_trade_dca
 from bot.notifications.telegram_service import TelegramService
+
+# Add the parent directory of the bot folder to the Python path
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -113,12 +118,12 @@ async def main():
                 current_day = datetime.datetime.utcnow().day
                 if current_day != last_day:
                     logging.info("New day, resetting daily loss limit.")
-                    daily_initial_equity = await calculate_total_equity(client, open_trades, initial_balance)
+                    daily_initial_equity = await get_total_balance(client, config)
                     daily_loss_limit_reached = False
                     last_day = current_day
 
                     # Send daily report
-                    total_equity = await calculate_total_equity(client, open_trades, initial_balance)
+                    total_equity = await get_total_balance(client, open_trades, initial_balance)
                     daily_report = f"Daily report:\nInitial equity: {daily_initial_equity}\nTotal equity: {total_equity}" # Removed extra parenthesis
                     await telegram_service.send_message(telegram_chat_id, daily_report)
 
@@ -130,7 +135,7 @@ async def main():
 
                 # Check daily loss limit in real-time
                 if not daily_loss_limit_reached:
-                    total_equity = await calculate_total_equity(client, open_trades, initial_balance)
+                    total_equity = await get_total_balance(client, open_trades, initial_balance)
                     loss_ratio = (daily_initial_equity - total_equity) / daily_initial_equity if daily_initial_equity > 0 else 0
                     if loss_ratio >= daily_loss_limit:
                         daily_loss_limit_reached = True
@@ -145,12 +150,13 @@ async def main():
                         if trade_details:
                             logging.info(f"Trade opened for {symbol}: {trade_details}")
                             
-                            trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
-
                             # Place take profit order
                             tp_order = await place_take_profit_order(client, symbol, trade_details["quantity"], trade_details["avg_price"], config)
                             if tp_order:
                                 logging.info(f"Take profit order placed for {symbol}: {tp_order}")
+                                
+                                # Now insert to DB and memory only after both succeeded
+                                trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
                                 await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
                                 await update_trade_tp_order_id(trade_id, tp_order['orderId'])
 

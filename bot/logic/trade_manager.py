@@ -2,7 +2,7 @@ import asyncio
 import logging
 from binance import AsyncClient
 from binance.exceptions import BinanceAPIException
-from bot.database.database_service import insert_order, update_trade_status, update_trade_tp_order_id
+from bot.database.database_service import insert_order, update_trade_status, update_trade_tp_order_id, get_open_trades
 from bot.utils.retry import retry
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,20 @@ async def get_total_balance(client: AsyncClient, config: dict) -> float:
                     total_balance += total_asset * price
                 except:
                     pass  # ignore if no pair
+        
+        # Add unrealized PnL from open trades
+        open_trades = await get_open_trades()
+        if open_trades:
+            symbols = [trade['symbol'] for trade in open_trades]
+            ticker_stats = await client.get_ticker(symbols=symbols)
+            prices = {item['symbol']: float(item['lastPrice']) for item in ticker_stats}
+
+            for trade in open_trades:
+                symbol = trade['symbol']
+                current_price = prices.get(symbol, 0)
+                unrealized_pnl = (current_price - trade['avg_price']) * trade['quantity']
+                total_balance += unrealized_pnl
+
         return total_balance
     except BinanceAPIException as e:
         logger.error(f"Error getting total balance: {e}")

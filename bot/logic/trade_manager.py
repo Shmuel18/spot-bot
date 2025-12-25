@@ -26,7 +26,7 @@ async def get_available_balance(client: AsyncClient, asset: str = 'USDT') -> flo
         return 0.0
 
 @retry(max_retries=3, backoff_factor=2)
-async def get_total_balance(client: AsyncClient) -> float:
+async def get_total_balance(client: AsyncClient, config: dict) -> float:
     '''
     Retrieves the total balance in USDT equivalent from Binance.
     '''
@@ -41,7 +41,7 @@ async def get_total_balance(client: AsyncClient) -> float:
             total_asset = free + locked
             if asset == 'USDT':
                 total_balance += total_asset
-            elif total_asset > 0 and asset in ['BTC', 'ETH', 'BNB']:  # common pairs
+            elif total_asset > 0 and asset in config['balance_assets']:  # common pairs
                 try:
                     ticker = await client.get_ticker(symbol=asset + 'USDT')
                     price = float(ticker['lastPrice'])
@@ -103,9 +103,9 @@ async def open_trade(client: AsyncClient, symbol: str, config: dict) ->  dict | 
         logger.error(f"Could not retrieve symbol info for {symbol}")
         return None
 
-    # Determine quantity (3% of available USDT balance)
+    # Determine quantity (position_size_percent of available USDT balance)
     available_balance = await get_available_balance(client)
-    quantity = available_balance * 0.03
+    quantity = available_balance * (config['position_size_percent'] / 100)
 
     # Apply precision guard (round quantity to step size)
     step_size = symbol_info['filters'][2]['stepSize']
@@ -155,6 +155,7 @@ async def place_take_profit_order(client: AsyncClient, symbol: str, quantity: fl
 async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: float, current_avg_price: float, trade_id: int, tp_order_id: str, dca_count: int) -> dict | None:
     '''
     Performs Dollar-Cost Averaging (DCA) for a given symbol.
+    Returns a dict with tp_order, new_avg_price, new_quantity if successful.
     '''
     try:
         # Cancel existing take profit order
@@ -187,17 +188,18 @@ async def dca(client: AsyncClient, symbol: str, config: dict, current_quantity: 
         ticker = await client.get_ticker(symbol=symbol)
         current_price = float(ticker['lastPrice'])
         new_avg_price = (current_avg_price * current_quantity + current_price * dca_quantity) / (current_quantity + dca_quantity)
+        new_quantity = current_quantity + dca_quantity
 
         # Place new take profit order
-        tp_order = await place_take_profit_order(client, symbol, current_quantity + dca_quantity, new_avg_price, config)
+        tp_order = await place_take_profit_order(client, symbol, new_quantity, new_avg_price, config)
         if tp_order:
             logger.info(f"Placed new take profit order for {symbol}: {tp_order}")
             await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
             await update_trade_tp_order_id(trade_id, tp_order['orderId'])
+            return {'tp_order': tp_order, 'new_avg_price': new_avg_price, 'new_quantity': new_quantity}
         else:
             logger.error(f"Failed to place new take profit order for {symbol}")
-
-        return tp_order
+            return None
 
     except BinanceAPIException as e:
         logger.error(f"Error performing DCA for {symbol}: {e}")

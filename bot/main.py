@@ -59,7 +59,7 @@ async def main():
         logging.info(f"Tradable symbols: {symbols}")
 
         # Initialize variables for daily loss limit
-        initial_balance = await get_total_balance(client)
+        initial_balance = await get_total_balance(client, config)
         daily_loss_limit = config['daily_loss_limit'] / 100
         daily_initial_equity = initial_balance
         daily_loss_limit_reached = False
@@ -83,6 +83,15 @@ async def main():
                         elif tp_order['status'] == 'CANCELED':
                             logging.info(f"Take profit order {tp_order_id} for {symbol} was canceled during downtime.")
                             await update_trade_status(trade_data['trade_id'], TRADE_STATE_OPEN)
+                            # Try to place new TP order
+                            new_tp_order = await place_take_profit_order(client, symbol, trade_data["quantity"], trade_data["avg_price"], config)
+                            if new_tp_order:
+                                logging.info(f"Placed new take profit order for {symbol}: {new_tp_order}")
+                                await insert_order(trade_data['trade_id'], new_tp_order['orderId'], 'TP', new_tp_order['price'], new_tp_order['origQty'], new_tp_order['status'])
+                                await update_trade_tp_order_id(trade_data['trade_id'], new_tp_order['orderId'])
+                                open_trades[symbol]['tp_order_id'] = new_tp_order['orderId']
+                            else:
+                                logging.error(f"Failed to place new take profit order for {symbol} during recovery")
                         else:
                             logging.info(f"Take profit order {tp_order_id} for {symbol} is still active.")
                     else:
@@ -94,7 +103,7 @@ async def main():
 
         # Initialize error counter
         consecutive_errors = 0
-        max_consecutive_errors = 10
+        max_consecutive_errors = config['max_consecutive_errors']
 
         # Check entry conditions for each symbol
         last_day = datetime.datetime.utcnow().day
@@ -137,11 +146,6 @@ async def main():
                             logging.info(f"Trade opened for {symbol}: {trade_details}")
                             
                             trade_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade_details["avg_price"], trade_details["quantity"], 0, 0)
-                            open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': None, 'dca_count': 0} # fixed syntax here.
-
-                            # Send Telegram notification
-                            message = f"<b>Trade opened</b>\nSymbol: {symbol}\nPrice: {trade_details['avg_price']}\nQuantity: {trade_details['quantity']}" #Fixed f-string
-                            await telegram_service.send_message(telegram_chat_id, message)
 
                             # Place take profit order
                             tp_order = await place_take_profit_order(client, symbol, trade_details["quantity"], trade_details["avg_price"], config)
@@ -149,7 +153,13 @@ async def main():
                                 logging.info(f"Take profit order placed for {symbol}: {tp_order}")
                                 await insert_order(trade_id, tp_order['orderId'], 'TP', tp_order['price'], tp_order['origQty'], tp_order['status'])
                                 await update_trade_tp_order_id(trade_id, tp_order['orderId'])
-                                open_trades[symbol]['tp_order_id'] = tp_order['orderId']
+
+                                # Now add to memory only after both buy and TP succeeded
+                                open_trades[symbol] = {"quantity": trade_details["quantity"], "avg_price": trade_details["avg_price"], 'trade_id': trade_id, 'tp_order_id': tp_order['orderId'], 'dca_count': 0}
+
+                                # Send Telegram notification
+                                message = f"<b>Trade opened</b>\nSymbol: {symbol}\nPrice: {trade_details['avg_price']}\nQuantity: {trade_details['quantity']}" #Fixed f-string
+                                await telegram_service.send_message(telegram_chat_id, message)
                             else:
                                 logging.error(f"Failed to place take profit order for {symbol}")
                                 await telegram_service.send_message(telegram_chat_id, f"Failed to place take profit order for {symbol}")
@@ -160,27 +170,17 @@ async def main():
                     elif symbol in open_trades and await check_dca_conditions(client, symbol, config, open_trades[symbol]["avg_price"]):
                         logging.info(f"DCA conditions met for {symbol}")
                         # Perform DCA
-                        tp_order = await dca(client, symbol, config, open_trades[symbol]["quantity"], open_trades[symbol]["avg_price"], open_trades[symbol]['trade_id'], open_trades[symbol]['tp_order_id'], open_trades[symbol]['dca_count'])
-                        if tp_order:
-                            logging.info(f"DCA performed for {symbol}: {tp_order}")
+                        dca_result = await dca(client, symbol, config, open_trades[symbol]["quantity"], open_trades[symbol]["avg_price"], open_trades[symbol]['trade_id'], open_trades[symbol]['tp_order_id'], open_trades[symbol]['dca_count'])
+                        if dca_result:
+                            logging.info(f"DCA performed for {symbol}: {dca_result['tp_order']}")
 
-                            # Update trade details with the new values
-                            ticker = await client.get_ticker(symbol=symbol)
-                            current_price = float(ticker['lastPrice'])
-                            dca_quantity = open_trades[symbol]["quantity"] * config['dca_scales'][open_trades[symbol]['dca_count']]
-
-                            # Round dca_quantity to step size
-                            symbol_info = await get_symbol_info(client, symbol)
-                            if symbol_info:
-                                step_size = symbol_info['filters'][2]['stepSize']
-                                dca_quantity = await round_quantity(dca_quantity, step_size)
-
-                            new_avg_price = (open_trades[symbol]["avg_price"] * open_trades[symbol]["quantity"] + current_price * dca_quantity) / (open_trades[symbol]["quantity"] + dca_quantity)
-                            open_trades[symbol]["avg_price"] = new_avg_price
-                            open_trades[symbol]["quantity"] += dca_quantity
+                            # Update trade details with the returned values
+                            open_trades[symbol]["avg_price"] = dca_result['new_avg_price']
+                            open_trades[symbol]["quantity"] = dca_result['new_quantity']
+                            open_trades[symbol]['tp_order_id'] = dca_result['tp_order']['orderId']
 
                             # Update DB
-                            await update_trade_dca(open_trades[symbol]['trade_id'], new_avg_price, open_trades[symbol]["quantity"], open_trades[symbol]['dca_count'] + 1)  # increment dca_count
+                            await update_trade_dca(open_trades[symbol]['trade_id'], dca_result['new_avg_price'], dca_result['new_quantity'], open_trades[symbol]['dca_count'] + 1)  # increment dca_count
                             open_trades[symbol]['dca_count'] += 1  # update in memory
 
                             # Send Telegram notification
@@ -194,7 +194,7 @@ async def main():
                         logging.debug(f"No action for {symbol}")
 
                 consecutive_errors = 0  # Reset error counter if no errors occurred
-                await asyncio.sleep(60)  # Check every 60 seconds
+                await asyncio.sleep(config['sleep_interval'])  # Check every sleep_interval seconds
 
             except Exception as e:
                 logging.error(f"An error occurred: {e}")
@@ -205,7 +205,7 @@ async def main():
                     await telegram_service.send_message(telegram_chat_id, f"Too many consecutive errors ({consecutive_errors}). Stopping the bot.")
                     break
                 consecutive_errors += 1
-                await asyncio.sleep(60)  # Wait before retrying
+                await asyncio.sleep(config['sleep_interval'])  # Wait before retrying
 
         await client.close_connection()
 

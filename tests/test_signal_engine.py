@@ -1,51 +1,54 @@
 import pytest
-from unittest.mock import AsyncMock, patch
-from bot.logic.signal_engine import check_entry_conditions, get_sma_150, sma_cache
+from unittest.mock import AsyncMock
+from decimal import Decimal
+from bot.logic.signal_engine import check_entry_conditions, get_sma, sma_cache
+from bot.config_model import BotConfig
 
 @pytest.mark.asyncio
 async def test_check_entry_conditions_no_sma():
     client = AsyncMock()
     client.get_historical_klines.side_effect = [[], []]  # No klines
-    config = {'sma_length': 150, 'timeframe': '1h', 'dip_threshold': -5}
+    config = {'sma_length': 150, 'timeframe': '1h', 'dip_threshold': Decimal('-5')}
     result = await check_entry_conditions(client, 'BTCUSDT', config)
     assert result == False
 
 @pytest.mark.asyncio
 async def test_check_entry_conditions_meets_conditions():
     client = AsyncMock()
-    # Mock SMA klines
-    sma_klines = [[0, '100', '110', '90', '105']] * 151  # Enough for SMA > 100
-    client.get_historical_klines.side_effect = [sma_klines, [['0', '100', '110', '90', '95']]]  # Current price 95, open 100, change -5%
-    config = {'sma_length': 150, 'timeframe': '1h', 'dip_threshold': -4}  # -5 <= -4, 95 < 105
+    # Mock SMA klines: מחיר סגירה 105 לאורך 151 נרות
+    sma_klines = [[0, '0', '0', '0', '105']] * 151 
+    # Current kline: פתיחה 100, סגירה 95 -> ירידה של 5%
+    current_kline = [['0', '100', '0', '0', '95']]
+    client.get_historical_klines.side_effect = [sma_klines, current_kline]
+    
+    config = {'sma_length': 150, 'timeframe': '1h', 'dip_threshold': Decimal('-4')}
+    # -5 <= -4 (תנאי ירידה מתקיים) וגם 95 < 105 (מתחת ל-SMA)
     result = await check_entry_conditions(client, 'BTCUSDT', config)
     assert result == True
 
 @pytest.mark.asyncio
 async def test_sma_caching():
     client = AsyncMock()
-    sma_klines = [[0, '100', '110', '90', '105']] * 151
+    sma_klines = [[0, '0', '0', '0', '105']] * 151
     client.get_historical_klines.return_value = sma_klines
     config = {'sma_length': 150, 'timeframe': '1h'}
     
     # Clear cache
     sma_cache.clear()
     
-    # First call should calculate
-    result1 = await get_sma_150(client, 'BTCUSDT', config)
+    # פעם ראשונה - חישוב מלא מול ה-API
+    result1 = await get_sma(client, 'BTCUSDT', config)
     assert result1 is not None
     assert client.get_historical_klines.call_count == 1
     assert ('BTCUSDT', '1h') in sma_cache
     
-    # Second call should use cache
-    result2 = await get_sma_150(client, 'BTCUSDT', config)
+    # פעם שנייה - שימוש ב-Cache (לא קורא ל-API)
+    result2 = await get_sma(client, 'BTCUSDT', config)
     assert result2 == result1
-    assert client.get_historical_klines.call_count == 1  # Still 1, used cache
-
+    assert client.get_historical_klines.call_count == 1 
 
 def test_config_validation():
-    from bot.config_model import BotConfig
-    
-    # Valid config
+    # בדיקת וולידציה של ה-Pydantic Model החדש
     config_data = {
         "timeframe": "1h",
         "sma_length": 150,
@@ -63,12 +66,10 @@ def test_config_validation():
     config = BotConfig(**config_data)
     assert config.timeframe == "1h"
     assert config.sma_length == 150
+    assert isinstance(config.dip_threshold, Decimal)
 
-    # Invalid config
+    # בדיקת שגיאה בנתון לא תקין
     invalid_data = config_data.copy()
     invalid_data["sma_length"] = -1
-    try:
+    with pytest.raises(Exception):
         BotConfig(**invalid_data)
-        assert False, "Should raise validation error"
-    except Exception:
-        pass

@@ -1,6 +1,6 @@
 import structlog
 import uuid
-from decimal import Decimal, ROUND_FLOOR, ROUND_DOWN
+from decimal import Decimal, ROUND_FLOOR
 from binance import AsyncClient
 from bot.utils.retry import retry
 
@@ -25,21 +25,15 @@ async def get_total_balance(client: AsyncClient, config: dict, open_trades: dict
     try:
         account = await client.get_account()
         total_nlv = Decimal('0')
-
-        # 1. USDT balance
         usdt_data = next((b for b in account["balances"] if b["asset"] == "USDT"), None)
         if usdt_data:
             total_nlv += Decimal(usdt_data["free"]) + Decimal(usdt_data["locked"])
-
-        # 2. Market value of open positions
         if open_trades:
-            # משתמשים בטיקר אחד כדי לחסוך קריאות
             tickers = await client.get_ticker()
             ticker_dict = {t["symbol"]: Decimal(t["lastPrice"]) for t in tickers}
             for symbol, details in open_trades.items():
                 price = ticker_dict.get(symbol, Decimal('0'))
                 total_nlv += Decimal(str(details["quantity"])) * price
-
         return total_nlv
     except Exception as e:
         logger.error(f"Balance calculation error: {e}")
@@ -50,6 +44,9 @@ async def open_trade(client: AsyncClient, symbol: str, config: dict):
     try:
         s_info = await client.get_symbol_info(symbol)
         lot_size = find_filter(s_info, "LOT_SIZE")["stepSize"]
+        # קבלת פילטר סכום מינימלי (Notional)
+        min_notional_filter = find_filter(s_info, "NOTIONAL") or find_filter(s_info, "MIN_NOTIONAL")
+        min_notional = Decimal(min_notional_filter.get("minNotional", "11")) if min_notional_filter else Decimal('11')
 
         ticker = await client.get_ticker(symbol=symbol)
         curr_price = Decimal(ticker["lastPrice"])
@@ -58,10 +55,15 @@ async def open_trade(client: AsyncClient, symbol: str, config: dict):
         usdt_free = Decimal(next((b["free"] for b in account["balances"] if b["asset"] == "USDT"), "0"))
         
         pos_size_usdt = usdt_free * (Decimal(str(config["position_size_percent"])) / 100)
+        
+        # בדיקה האם הסכום המחושב קטן מהמינימום של הבורסה
+        if pos_size_usdt < min_notional:
+            logger.warning(f"Calculated size {pos_size_usdt}USDT for {symbol} is below minimum {min_notional}")
+            return None
+
         qty = await round_step_size(pos_size_usdt / curr_price, lot_size)
 
         if qty <= 0:
-            logger.warning(f"Quantity too low for {symbol}")
             return None
 
         if config["dry_run"]:
@@ -86,12 +88,7 @@ async def place_take_profit_order(client, symbol, quantity: Decimal, avg_price: 
             return {"orderId": "DRY_TP", "status": "NEW", "price": tp_price, "origQty": quantity}
 
         client_order_id = f"tp_{symbol}_{uuid.uuid4().hex[:16]}"
-        return await client.order_limit_sell(
-            symbol=symbol, 
-            quantity=float(quantity), 
-            price=float(tp_price), 
-            newClientOrderId=client_order_id
-        )
+        return await client.order_limit_sell(symbol=symbol, quantity=float(quantity), price=float(tp_price), newClientOrderId=client_order_id)
     except Exception as e:
         logger.error(f"TP placement error: {e}")
         return None
@@ -99,16 +96,13 @@ async def place_take_profit_order(client, symbol, quantity: Decimal, avg_price: 
 @retry(max_retries=3)
 async def dca(client, symbol, config, current_qty: Decimal, current_avg: Decimal, trade_id, tp_id, count):
     try:
-        # Cancel previous TP
         if not config["dry_run"] and tp_id:
             try: await client.cancel_order(symbol=symbol, orderId=tp_id)
             except: pass
 
         s_info = await client.get_symbol_info(symbol)
         lot_size = find_filter(s_info, "LOT_SIZE")["stepSize"]
-
         scale = Decimal(str(config["dca_scales"][min(count, len(config["dca_scales"]) - 1)]))
-        # גודל ה-DCA הוא מכפלה של הכמות ההתחלתית
         dca_qty = await round_step_size(current_qty * scale, lot_size)
 
         ticker = await client.get_ticker(symbol=symbol)

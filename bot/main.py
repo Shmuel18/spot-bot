@@ -64,6 +64,7 @@ class TradingEngine:
         self.daily_initial_equity = Decimal('0')
         self.daily_loss_limit_reached = False
         self.symbols = []
+        self.last_trade_time = {} # למעקב Cooldown
         self.logger = logger.bind(component="TradingEngine")
 
     async def initialize(self):
@@ -100,24 +101,34 @@ class TradingEngine:
     async def monitor_open_trades(self):
         for symbol, trade_data in list(self.open_trades.items()):
             try:
-                # 1. Check Take Profit
+                # 1. בדיקת סטטוס פקודה בבורסה
                 if self.config.dry_run:
                     ticker = await api_call_with_retry(self.client.get_ticker, symbol=symbol)
                     filled = Decimal(ticker["lastPrice"]) >= trade_data["tp_price"]
                 else:
                     order = await api_call_with_retry(get_order, self.client, symbol, trade_data["tp_order_id"])
-                    filled = order and order["status"] == "FILLED"
+                    
+                    # אם הפקודה לא נמצאה או בוטלה - מציבים אותה מחדש
+                    if not order or order["status"] in ["CANCELED", "EXPIRED", "REJECTED"]:
+                        self.logger.warning(f"TP order missing or canceled for {symbol}. Re-placing...", status=order["status"] if order else "None")
+                        new_tp = await api_call_with_retry(place_take_profit_order, self.client, symbol, trade_data["quantity"], trade_data["avg_price"], self.config.dict())
+                        if new_tp:
+                            await update_trade_tp_order_id(trade_data["trade_id"], new_tp["orderId"])
+                            self.open_trades[symbol]["tp_order_id"] = new_tp["orderId"]
+                        continue
+                        
+                    filled = order["status"] == "FILLED"
                 
                 if filled:
                     await update_trade_status(trade_data["trade_id"], TRADE_STATE_CLOSED_PROFIT)
                     del self.open_trades[symbol]
+                    self.last_trade_time[symbol] = datetime.datetime.now() # Cooldown מתחיל מרגע הסגירה
                     await self.telegram_service.send_message(self.chat_id, f"💰 Profit Taken: {symbol}")
                     continue
 
-                # 2. Check DCA Conditions
+                # 2. בדיקת DCA
                 if trade_data["dca_count"] < len(self.config.dca_scales):
                     if await check_dca_conditions(self.client, symbol, self.config.dict(), float(trade_data["avg_price"])):
-                        self.logger.info("Executing DCA", symbol=symbol, count=trade_data["dca_count"] + 1)
                         res = await dca(
                             self.client, symbol, self.config.dict(), 
                             trade_data["quantity"], trade_data["avg_price"],
@@ -126,8 +137,6 @@ class TradingEngine:
                         if res:
                             await update_trade_dca(trade_data["trade_id"], float(res["new_avg_price"]), float(res["new_quantity"]), 1)
                             await update_trade_tp_order_id(trade_data["trade_id"], res["tp_order"]["orderId"])
-                            
-                            # Update local state
                             self.open_trades[symbol].update({
                                 "quantity": res["new_quantity"],
                                 "avg_price": res["new_avg_price"],
@@ -135,28 +144,24 @@ class TradingEngine:
                                 "tp_price": res["new_avg_price"] * (1 + Decimal(str(self.config.tp_percent)) / 100),
                                 "dca_count": trade_data["dca_count"] + 1
                             })
-                            await self.telegram_service.send_message(self.chat_id, f"🔄 DCA Executed: {symbol} (Step {trade_data['dca_count']})")
+                            await self.telegram_service.send_message(self.chat_id, f"🔄 DCA Executed: {symbol}")
 
             except Exception as e:
                 self.logger.error("Monitor error", symbol=symbol, error=str(e))
 
-    async def run(self):
-        await self.initialize()
-        while True:
-            try:
-                await self.check_risk_limits()
-                await self.monitor_open_trades()
-                await self.scan_opportunities()
-                await asyncio.sleep(self.config.sleep_interval)
-            except Exception as e:
-                self.logger.error("Loop error", error=str(e))
-                await asyncio.sleep(60)
-
     async def scan_opportunities(self):
         if self.daily_loss_limit_reached or len(self.open_trades) >= self.config.max_positions:
             return
+            
+        now = datetime.datetime.now()
         for symbol in self.symbols:
             if symbol in self.open_trades: continue
+            
+            # בדיקת Cooldown
+            if symbol in self.last_trade_time:
+                if (now - self.last_trade_time[symbol]).total_seconds() < getattr(self.config, 'cooldown', 30):
+                    continue
+
             if await api_call_with_retry(check_entry_conditions, self.client, symbol, self.config.dict()):
                 trade = await api_call_with_retry(open_trade, self.client, symbol, self.config.dict())
                 if trade:

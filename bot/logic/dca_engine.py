@@ -1,30 +1,22 @@
 import structlog
-from binance import AsyncClient
+from decimal import Decimal
 
 logger = structlog.get_logger(__name__)
 
-
-async def check_dca_conditions(client: AsyncClient, symbol: str, config: dict, current_avg_price: float):
-    """
-    Checks the DCA conditions for a given symbol.
-    """
+async def check_dca_conditions(client, symbol: str, config: dict, current_avg_price: Decimal) -> bool:
     try:
-        # Get the current price
         ticker = await client.get_ticker(symbol=symbol)
-        current_price = float(ticker["lastPrice"])
+        current_price = Decimal(str(ticker["lastPrice"]))
 
-        # Calculate the price drop from the average price
-        price_drop = (current_avg_price - current_price) / current_avg_price * 100
+        # חישוב אחוז ירידה בצורה מדויקת
+        price_drop = ((current_avg_price - current_price) / current_avg_price) * 100
+        dca_trigger = Decimal(str(config["dca_trigger"]))
 
-        # Check if the price drop is greater than the DCA trigger
-        dca_trigger = config["dca_trigger"]
         if price_drop >= dca_trigger:
-            logger.info(f"DCA conditions met for {symbol}: price_drop={price_drop}, dca_trigger={dca_trigger}")
+            logger.info("dca_triggered", symbol=symbol, drop=f"{price_drop:.2f}%")
             return True
-        else:
-            logger.debug(f"DCA conditions not met for {symbol}: price_drop={price_drop}, dca_trigger={dca_trigger}")
-            return False
+        return False
 
     except Exception as e:
-        logger.error(f"Error checking DCA conditions for {symbol}: {e}")
+        logger.error("dca_check_error", symbol=symbol, error=str(e))
         return False

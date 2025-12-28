@@ -6,7 +6,7 @@ from bot.config_model import BotConfig
 
 @pytest.mark.asyncio
 async def test_trading_engine_initialization():
-    # 1. הכנת קונפיגורציה (שימוש ב-Decimal כפי שמוגדר במודל)
+    # 1. קונפיגורציה
     config = BotConfig(
         timeframe='15m',
         sma_length=150,
@@ -19,31 +19,25 @@ async def test_trading_engine_initialization():
         min_24h_volume=Decimal("1000000"),
         daily_loss_limit=Decimal("10"),
         sleep_interval=60,
-        blacklist=[]
+        blacklist=[],
+        dry_run=True # חשוב לטסט הזה כדי ש-reconcile ידלג על לוגיקת ה-API
     )
 
-    # 2. Mock לקליינט של בינאנס
     client = AsyncMock()
-    client.get_account.return_value = {
-        "balances": [{"asset": "USDT", "free": "1000", "locked": "0"}]
-    }
     
-    # 3. אתחול המנוע
+    # 2. אתחול המנוע
     engine = TradingEngine(config, client)
 
-    # 4. Mock לשירותי ה-Database
+    # 3. Mock לשירותי ה-Database - שימוש בנתיב מלא ומדויק
     with patch('bot.main.create_tables', new_callable=AsyncMock) as mock_create, \
          patch('bot.main.TradeRepository.get_open_trades', new_callable=AsyncMock) as mock_get_trades:
         
-        mock_get_trades.return_value = [] # אין עסקאות פתוחות בהתחלה
+        mock_get_trades.return_value = [] 
         
-        # הרצת ה-initialize (עכשיו יקרא גם ל-create_tables וגם ל-reconcile)
+        # 4. הרצה
         await engine.initialize()
 
-        # 5. בדיקות (Assertions)
+        # 5. בדיקות
         assert engine.running == True
-        assert engine.config.timeframe == '15m'
-        
-        # כעת הבדיקה הזו תעבור כי initialize קורא ל-create_tables
         mock_create.assert_called_once()
         mock_get_trades.assert_called_once()

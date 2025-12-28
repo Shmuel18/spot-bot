@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from aiohttp import ClientError
+from decimal import Decimal
 
 from bot.exchange.binance_service import get_usdt_pairs, filter_by_volume, get_order
 from bot.logic.signal_engine import check_entry_conditions
@@ -26,7 +27,6 @@ from bot.config_model import BotConfig
 
 load_dotenv()
 
-# הגדרת לוגים מובנים (Structured Logging)
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -61,9 +61,8 @@ class TradingEngine:
         self.telegram_service = telegram_service
         self.chat_id = chat_id
         self.open_trades = {}
-        self.daily_initial_equity = 0.0
+        self.daily_initial_equity = Decimal('0')
         self.daily_loss_limit_reached = False
-        self.last_day = datetime.datetime.now(datetime.timezone.utc).day
         self.symbols = []
         self.logger = logger.bind(component="TradingEngine")
 
@@ -72,7 +71,7 @@ class TradingEngine:
         await create_tables()
         await self.reconcile_state()
         balance = await api_call_with_retry(get_total_balance, self.client, self.config, self.open_trades)
-        self.daily_initial_equity = float(balance)
+        self.daily_initial_equity = balance
         usdt_pairs = await api_call_with_retry(get_usdt_pairs, self.client, self.config)
         self.symbols = await api_call_with_retry(filter_by_volume, self.client, usdt_pairs, self.config.min_24h_volume)
 
@@ -80,11 +79,11 @@ class TradingEngine:
         open_trades_db = await get_open_trades()
         self.open_trades = {
             trade["symbol"]: {
-                "quantity": trade["base_qty"],
-                "avg_price": trade["avg_price"],
+                "quantity": Decimal(str(trade["base_qty"])),
+                "avg_price": Decimal(str(trade["avg_price"])),
                 "trade_id": trade["id"],
                 "tp_order_id": trade["tp_order_id"],
-                "tp_price": trade["avg_price"] * (1 + self.config.tp_percent / 100),
+                "tp_price": Decimal(str(trade["avg_price"])) * (1 + Decimal(str(self.config.tp_percent)) / 100),
                 "dca_count": trade["dca_count"],
             }
             for trade in open_trades_db
@@ -92,18 +91,19 @@ class TradingEngine:
 
     async def check_risk_limits(self):
         if self.daily_initial_equity <= 0: return
-        total_equity = float(await api_call_with_retry(get_total_balance, self.client, self.config, self.open_trades))
-        loss_percent = (self.daily_initial_equity - total_equity) / self.daily_initial_equity
-        if not self.daily_loss_limit_reached and loss_percent >= self.config.daily_loss_limit / 100:
+        total_equity = await api_call_with_retry(get_total_balance, self.client, self.config, self.open_trades)
+        loss_percent = (self.daily_initial_equity - total_equity) / self.daily_initial_equity * 100
+        if not self.daily_loss_limit_reached and loss_percent >= Decimal(str(self.config.daily_loss_limit)):
             self.daily_loss_limit_reached = True
-            await self.telegram_service.send_message(self.chat_id, "🛑 Daily loss limit reached.")
+            await self.telegram_service.send_message(self.chat_id, f"🛑 Daily loss limit reached: {loss_percent:.2f}%")
 
     async def monitor_open_trades(self):
         for symbol, trade_data in list(self.open_trades.items()):
             try:
+                # 1. Check Take Profit
                 if self.config.dry_run:
                     ticker = await api_call_with_retry(self.client.get_ticker, symbol=symbol)
-                    filled = float(ticker["lastPrice"]) >= trade_data["tp_price"]
+                    filled = Decimal(ticker["lastPrice"]) >= trade_data["tp_price"]
                 else:
                     order = await api_call_with_retry(get_order, self.client, symbol, trade_data["tp_order_id"])
                     filled = order and order["status"] == "FILLED"
@@ -112,6 +112,31 @@ class TradingEngine:
                     await update_trade_status(trade_data["trade_id"], TRADE_STATE_CLOSED_PROFIT)
                     del self.open_trades[symbol]
                     await self.telegram_service.send_message(self.chat_id, f"💰 Profit Taken: {symbol}")
+                    continue
+
+                # 2. Check DCA Conditions
+                if trade_data["dca_count"] < len(self.config.dca_scales):
+                    if await check_dca_conditions(self.client, symbol, self.config.dict(), float(trade_data["avg_price"])):
+                        self.logger.info("Executing DCA", symbol=symbol, count=trade_data["dca_count"] + 1)
+                        res = await dca(
+                            self.client, symbol, self.config.dict(), 
+                            trade_data["quantity"], trade_data["avg_price"],
+                            trade_data["trade_id"], trade_data["tp_order_id"], trade_data["dca_count"]
+                        )
+                        if res:
+                            await update_trade_dca(trade_data["trade_id"], float(res["new_avg_price"]), float(res["new_quantity"]), 1)
+                            await update_trade_tp_order_id(trade_data["trade_id"], res["tp_order"]["orderId"])
+                            
+                            # Update local state
+                            self.open_trades[symbol].update({
+                                "quantity": res["new_quantity"],
+                                "avg_price": res["new_avg_price"],
+                                "tp_order_id": res["tp_order"]["orderId"],
+                                "tp_price": res["new_avg_price"] * (1 + Decimal(str(self.config.tp_percent)) / 100),
+                                "dca_count": trade_data["dca_count"] + 1
+                            })
+                            await self.telegram_service.send_message(self.chat_id, f"🔄 DCA Executed: {symbol} (Step {trade_data['dca_count']})")
+
             except Exception as e:
                 self.logger.error("Monitor error", symbol=symbol, error=str(e))
 
@@ -132,23 +157,25 @@ class TradingEngine:
             return
         for symbol in self.symbols:
             if symbol in self.open_trades: continue
-            if await api_call_with_retry(check_entry_conditions, self.client, symbol, self.config):
-                trade = await api_call_with_retry(open_trade, self.client, symbol, self.config)
+            if await api_call_with_retry(check_entry_conditions, self.client, symbol, self.config.dict()):
+                trade = await api_call_with_retry(open_trade, self.client, symbol, self.config.dict())
                 if trade:
-                    tp = await api_call_with_retry(place_take_profit_order, self.client, symbol, trade["quantity"], trade["avg_price"], self.config)
+                    tp = await api_call_with_retry(place_take_profit_order, self.client, symbol, trade["quantity"], trade["avg_price"], self.config.dict())
                     if tp:
-                        t_id = await insert_trade(symbol, TRADE_STATE_OPEN, trade["avg_price"], trade["quantity"], 0, 0)
+                        t_id = await insert_trade(symbol, TRADE_STATE_OPEN, float(trade["avg_price"]), float(trade["quantity"]), 0, 0)
                         await update_trade_tp_order_id(t_id, tp["orderId"])
                         self.open_trades[symbol] = {
                             "quantity": trade["quantity"],
                             "avg_price": trade["avg_price"],
                             "trade_id": t_id,
                             "tp_order_id": tp["orderId"],
-                            "tp_price": tp["price"] if "price" in tp else trade["avg_price"] * (1 + self.config.tp_percent / 100),
+                            "tp_price": Decimal(str(tp["price"])) if "price" in tp else trade["avg_price"] * (1 + Decimal(str(self.config.tp_percent)) / 100),
                             "dca_count": 0
                         }
+                        await self.telegram_service.send_message(self.chat_id, f"🚀 New Trade: {symbol}")
 
 async def main():
+    client = None
     try:
         config_path = Path(__file__).parent.parent / "config" / "config.yaml"
         with open(config_path, "r", encoding="utf-8") as f:
@@ -160,6 +187,9 @@ async def main():
         await engine.run()
     except Exception as e:
         print(f"Fatal error: {e}")
+    finally:
+        if client:
+            await client.close_connection()
 
 if __name__ == "__main__":
     asyncio.run(main())

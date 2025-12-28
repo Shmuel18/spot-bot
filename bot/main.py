@@ -1,10 +1,10 @@
 import asyncio
 import os
 import structlog
-from bot.config_model import BotConfig
 from bot.database.database_service import create_tables, TradeRepository
 from bot.logic.trade_manager import TradeManager
 from bot.logic.signal_engine import check_entry_conditions
+from bot.logic.dca_engine import check_dca_conditions
 from bot.exchange.binance_service import get_usdt_pairs, filter_by_volume
 from bot.exchange.websocket_manager import PriceCache
 from bot.notifications.telegram_service import TelegramService
@@ -12,7 +12,7 @@ from bot.notifications.telegram_service import TelegramService
 logger = structlog.get_logger(__name__)
 
 class TradingEngine:
-    def __init__(self, config: BotConfig, client):
+    def __init__(self, config, client):
         self.config = config
         self.client = client
         self.manager = TradeManager(client, config.model_dump())
@@ -23,22 +23,69 @@ class TradingEngine:
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
         self.telegram = TelegramService(token) if token else None
 
-    async def notify(self, message: str):
-        if self.telegram and self.chat_id:
+    async def run(self):
+        await self.initialize()
+        iteration = 0
+        
+        while self.running:
             try:
-                await self.telegram.send_message(self.chat_id, f"🤖 <b>SpotBot:</b>\n{message}")
+                # בדיקת בריאות Websocket
+                if not self.price_cache.is_healthy():
+                    logger.warning("stale_market_data_skipping_cycle")
+                    await asyncio.sleep(10)
+                    continue
+
+                open_trades = await TradeRepository.get_open_trades()
+                
+                # --- לוגיקת DCA: ניהול פוזיציות קיימות ---
+                for trade in open_trades:
+                    # בדיקה האם הגענו למקסימום מדרגות DCA
+                    if trade['dca_count'] >= len(self.config.dca_scales):
+                        continue
+                        
+                    if await check_dca_conditions(self.client, trade['symbol'], self.config.model_dump(), trade['avg_price']):
+                        success = await self.manager.execute_dca_buy(trade)
+                        if success:
+                            await self.notify(f"📉 DCA בוצע: <b>{trade['symbol']}</b> (מדרגה {trade['dca_count'] + 1})")
+
+                # --- לוגיקת כניסה: חיפוש הזדמנויות חדשות ---
+                if len(open_trades) < self.config.max_positions:
+                    await self._scan_for_new_entries(open_trades)
+
+                # סינכרון פקודות TP פעם ב-10 איטרציות
+                if iteration % 10 == 0:
+                    await self.reconcile()
+
+                iteration += 1
+                await asyncio.sleep(self.config.sleep_interval)
+                
             except Exception as e:
-                logger.error("telegram_notify_error", error=str(e))
+                logger.error("engine_loop_error", error=str(e))
+                await asyncio.sleep(15)
+
+    async def _scan_for_new_entries(self, open_trades):
+        all_symbols = await get_usdt_pairs(self.client, self.config)
+        vetted = await filter_by_volume(self.client, all_symbols, float(self.config.min_24h_volume))
+        
+        for symbol in vetted:
+            if any(t['symbol'] == symbol for t in open_trades): continue
+            
+            # אופטימיזציה: העברת ה-price_cache כדי למנוע קריאות API מיותרות
+            if await check_entry_conditions(self.client, symbol, self.config.model_dump()):
+                success = await self.manager.open_trade(symbol)
+                if success:
+                    await self.notify(f"✅ עסקה חדשה: <b>{symbol}</b>")
+                    break
 
     async def initialize(self):
         logger.info("system_startup")
         await create_tables()
         await self.price_cache.start()
         await self.reconcile()
-        await self.notify("הבוט עלה לאוויר ומתחיל לסרוק הזדמנויות! 🚀")
+        await self.notify("הבוט עלה לאוויר עם הגנות ייצור! 🚀")
 
     async def reconcile(self):
-        """סינכרון מצב קיים מול הבורסה למניעת פוזיציות יתומות"""
+        """סנכרון מצב קיים ואימות פקודות TP"""
         trades = await TradeRepository.get_open_trades()
         for t in trades:
             if self.config.dry_run: continue
@@ -46,39 +93,10 @@ class TradingEngine:
                 order = await self.client.get_order(symbol=t['symbol'], orderId=t['tp_order_id'])
                 if order and order['status'] == 'FILLED':
                     await TradeRepository.close_trade(t['id'], "CLOSED_PROFIT")
-                    await self.notify(f"💰 עסקה נסגרת ברווח: <b>{t['symbol']}</b>")
-                elif order and order['status'] in ['CANCELED', 'EXPIRED', 'REJECTED']:
-                    logger.warning("reconcile_replacing_lost_tp", symbol=t['symbol'])
-                    new_tp = await self.manager.place_tp_order(t['symbol'], t['base_qty'], t['avg_price'])
-                    if new_tp:
-                        await TradeRepository.confirm_trade(t['id'], t['avg_price'], t['base_qty'], new_tp['orderId'])
+                    await self.notify(f"💰 רווח מומש: <b>{t['symbol']}</b>")
             except Exception as e:
                 logger.error("reconcile_error", symbol=t['symbol'], error=str(e))
 
-    async def run(self):
-        await self.initialize()
-        while self.running:
-            try:
-                open_trades = await TradeRepository.get_open_trades()
-                if len(open_trades) < self.config.max_positions:
-                    all_symbols = await get_usdt_pairs(self.client, self.config)
-                    vetted = await filter_by_volume(self.client, all_symbols, float(self.config.min_24h_volume))
-                    
-                    for symbol in vetted:
-                        if any(t['symbol'] == symbol for t in open_trades): continue
-                        if await check_entry_conditions(self.client, symbol, self.config.model_dump()):
-                            success = await self.manager.open_trade(symbol)
-                            if success:
-                                await self.notify(f"✅ נפתחה עסקה חדשה: <b>{symbol}</b>")
-                                break 
-                await asyncio.sleep(self.config.sleep_interval)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("fatal_loop_error", error=str(e))
-                await asyncio.sleep(10)
-
-    async def stop(self):
-        self.running = False
-        await self.price_cache.stop()
-        logger.info("shutting_down_gracefully")
+    async def notify(self, message: str):
+        if self.telegram and self.chat_id:
+            await self.telegram.send_message(self.chat_id, f"🤖 <b>SpotBot:</b>\n{message}")

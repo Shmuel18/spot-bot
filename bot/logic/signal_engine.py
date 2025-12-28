@@ -1,6 +1,6 @@
 import structlog
 from binance import AsyncClient
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional, Dict, Tuple
 from decimal import Decimal
 
@@ -10,16 +10,8 @@ logger = structlog.get_logger(__name__)
 sma_cache: Dict[Tuple[str, str], Tuple[Decimal, datetime]] = {}
 CACHE_EXPIRY_MINUTES = 5
 
-def parse_timeframe(timeframe: str) -> int:
-    unit = timeframe[-1]
-    value = int(timeframe[:-1])
-    if unit == 'm': return value * 60
-    elif unit == 'h': return value * 3600
-    elif unit == 'd': return value * 86400
-    else: raise ValueError(f"Unsupported timeframe: {unit}")
-
 async def get_sma(client: AsyncClient, symbol: str, config: dict) -> Optional[Decimal]:
-    """Calculate SMA with Decimal precision and Caching."""
+    """חישוב SMA עם דיוק Decimal וניהול Cache."""
     cache_key = (symbol, config["timeframe"])
     now = datetime.now(timezone.utc)
 
@@ -29,7 +21,6 @@ async def get_sma(client: AsyncClient, symbol: str, config: dict) -> Optional[De
             return val
 
     try:
-        # Fetch enough candles for SMA
         klines = await client.get_historical_klines(symbol, config["timeframe"], limit=int(config["sma_length"]) + 1)
         if len(klines) < int(config["sma_length"]):
             return None
@@ -44,7 +35,7 @@ async def get_sma(client: AsyncClient, symbol: str, config: dict) -> Optional[De
         return None
 
 async def check_entry_conditions(client: AsyncClient, symbol: str, config: dict) -> bool:
-    """Check if conditions are met using Decimal math."""
+    """בדיקת תנאי כניסה: ירידה (Dip) ומחיר מתחת ל-SMA."""
     try:
         sma = await get_sma(client, symbol, config)
         klines = await client.get_historical_klines(symbol, config["timeframe"], limit=1)

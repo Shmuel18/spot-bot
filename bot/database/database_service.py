@@ -12,7 +12,7 @@ async def create_tables():
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
-                status TEXT NOT NULL, -- PENDING_BUY, OPEN, PENDING_SELL, CLOSED_PROFIT
+                status TEXT NOT NULL, 
                 avg_price TEXT NOT NULL, 
                 base_qty TEXT NOT NULL,
                 dca_count INTEGER NOT NULL,
@@ -25,7 +25,6 @@ async def create_tables():
 class TradeRepository:
     @staticmethod
     async def create_pending_trade(symbol: str):
-        """יוצר רשומה בסטטוס PENDING לפני הקנייה בפועל"""
         async with aiosqlite.connect(DATABASE_FILE) as db:
             cursor = await db.execute(
                 "INSERT INTO trades (symbol, status, avg_price, base_qty, dca_count) VALUES (?, 'PENDING_BUY', '0', '0', 0)",
@@ -35,12 +34,11 @@ class TradeRepository:
             return cursor.lastrowid
 
     @staticmethod
-    async def confirm_trade(trade_id: int, price: Decimal, qty: Decimal, tp_id: str):
-        """מעדכן רשומה ל-OPEN לאחר הצלחה בבורסה"""
+    async def confirm_trade(trade_id: int, price: Decimal, qty: Decimal, tp_id: str, dca_count: int = 0):
         async with aiosqlite.connect(DATABASE_FILE) as db:
             await db.execute(
-                "UPDATE trades SET status = 'OPEN', avg_price = ?, base_qty = ?, tp_order_id = ? WHERE id = ?",
-                (str(price), str(qty), tp_id, trade_id)
+                "UPDATE trades SET status = 'OPEN', avg_price = ?, base_qty = ?, tp_order_id = ?, dca_count = ? WHERE id = ?",
+                (str(price), str(qty), tp_id, dca_count, trade_id)
             )
             await db.commit()
 

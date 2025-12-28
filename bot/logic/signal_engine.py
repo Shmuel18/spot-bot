@@ -1,9 +1,9 @@
-import logging
+import structlog
 from binance import AsyncClient
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Tuple
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Cache for SMA values: (symbol, timeframe) -> (sma_value, timestamp)
 sma_cache: Dict[Tuple[str, str], Tuple[float, datetime]] = {}

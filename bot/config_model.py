@@ -15,6 +15,7 @@ class BotConfig(BaseModel):
     daily_loss_limit: float = Field(..., ge=0, le=100, description="Daily loss limit percentage")
     sleep_interval: int = Field(..., gt=0, description="Sleep interval between loops in seconds")
     blacklist: List[str] = Field(default_factory=list, description="Blacklisted symbols")
+    dry_run: bool = Field(default=True, description="Dry run mode")
 
     @field_validator('timeframe')
     @classmethod

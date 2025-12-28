@@ -1,7 +1,7 @@
-import logging
+import structlog
 from binance import AsyncClient
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def check_dca_conditions(client: AsyncClient, symbol: str, config: dict, current_avg_price: float):

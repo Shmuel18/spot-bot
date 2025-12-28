@@ -1,7 +1,7 @@
-import logging
+import structlog
 import telegram
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class TelegramService:

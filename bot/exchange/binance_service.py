@@ -1,8 +1,8 @@
-import logging
+import structlog
 from binance import AsyncClient
 from bot.utils.retry import retry
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @retry(max_retries=3, backoff_factor=2)

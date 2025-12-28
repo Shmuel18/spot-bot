@@ -1,9 +1,9 @@
-import logging
+import structlog
 import aiosqlite
 import os
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 DATABASE_FILE = os.getenv("DATABASE_FILE", str(Path(__file__).parent.parent / "database" / "trades.db"))
 

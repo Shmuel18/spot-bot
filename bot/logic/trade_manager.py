@@ -1,10 +1,11 @@
-import logging
+import structlog
 import math
+import uuid
 from decimal import Decimal, ROUND_FLOOR
 from binance import AsyncClient
 from bot.utils.retry import retry
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def find_filter(symbol_info, filter_type):
@@ -72,7 +73,8 @@ async def open_trade(client: AsyncClient, symbol: str, config: dict):
         if config["dry_run"]:
             return {"quantity": qty, "avg_price": curr_price}
 
-        order = await client.order_market_buy(symbol=symbol, quantity=float(qty))
+        client_order_id = f"open_{symbol}_{uuid.uuid4().hex[:16]}"
+        order = await client.order_market_buy(symbol=symbol, quantity=float(qty), newClientOrderId=client_order_id)
         return {"quantity": qty, "avg_price": curr_price, "order": order}
     except Exception as e:
         logger.error(f"Open trade error: {e}")
@@ -90,7 +92,8 @@ async def place_take_profit_order(client, symbol, quantity: Decimal, avg_price: 
         if config["dry_run"]:
             return {"orderId": "DRY_TP", "status": "NEW", "price": tp_price, "origQty": quantity}
 
-        return await client.order_limit_sell(symbol=symbol, quantity=float(quantity), price=float(tp_price))
+        client_order_id = f"tp_{symbol}_{uuid.uuid4().hex[:16]}"
+        return await client.order_limit_sell(symbol=symbol, quantity=float(quantity), price=float(tp_price), newClientOrderId=client_order_id)
     except Exception as e:
         logger.error(f"TP placement error: {e}")
         return None

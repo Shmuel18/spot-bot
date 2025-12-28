@@ -1,8 +1,8 @@
-import asyncio
 import logging
 import telegram
 
 logger = logging.getLogger(__name__)
+
 
 class TelegramService:
     def __init__(self, token: str):

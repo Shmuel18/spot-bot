@@ -20,6 +20,7 @@ from bot.database.database_service import (
     update_trade_dca,
 )
 from bot.notifications.telegram_service import TelegramService
+from bot.config_model import BotConfig
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -28,53 +29,13 @@ TRADE_STATE_OPEN = "OPEN"
 TRADE_STATE_CLOSED_PROFIT = "CLOSED_PROFIT"
 
 
-def validate_config(config: dict):
-    """
-    Validate the configuration dictionary.
-
-    Raises ValueError if invalid.
-    """
-    required_keys = [
-        "timeframe",
-        "sma_length",
-        "dip_threshold",
-        "position_size_percent",
-        "tp_percent",
-        "dca_scales",
-        "dca_trigger",
-        "max_positions",
-        "min_24h_volume",
-        "daily_loss_limit",
-        "sleep_interval",
-        "blacklist",
-    ]
-
-    for key in required_keys:
-        if key not in config:
-            raise ValueError(f"Missing required config key: {key}")
-
-    if not isinstance(config["sma_length"], int) or config["sma_length"] <= 0:
-        raise ValueError("sma_length must be a positive integer")
-
-    if not isinstance(config["position_size_percent"], (int, float)) or not (
-        0 < config["position_size_percent"] <= 100
-    ):
-        raise ValueError("position_size_percent must be between 0 and 100")
-
-    if not isinstance(config["dca_scales"], list) or not all(isinstance(x, (int, float)) for x in config["dca_scales"]):
-        raise ValueError("dca_scales must be a list of numbers")
-
-    # Add more validations as needed
-
-
 async def main():
     logging.info("Starting RDR2-Spot Bot...")
     try:
         config_path = Path(__file__).parent.parent / "config" / "config.yaml"
         with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-
-        validate_config(config)
+            config_data = yaml.safe_load(f)
+        config = BotConfig(**config_data)
 
         client = await AsyncClient.create(
             api_key=os.getenv("BINANCE_API_KEY"), api_secret=os.getenv("BINANCE_API_SECRET")

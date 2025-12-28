@@ -40,3 +40,35 @@ async def test_sma_caching():
     result2 = await get_sma_150(client, 'BTCUSDT', config)
     assert result2 == result1
     assert client.get_historical_klines.call_count == 1  # Still 1, used cache
+
+
+def test_config_validation():
+    from bot.config_model import BotConfig
+    
+    # Valid config
+    config_data = {
+        "timeframe": "1h",
+        "sma_length": 150,
+        "dip_threshold": -5.0,
+        "position_size_percent": 10.0,
+        "tp_percent": 5.0,
+        "dca_scales": [0.5, 1.0],
+        "dca_trigger": 10.0,
+        "max_positions": 5,
+        "min_24h_volume": 1000000.0,
+        "daily_loss_limit": 10.0,
+        "sleep_interval": 60,
+        "blacklist": ["BTCUSDT"],
+    }
+    config = BotConfig(**config_data)
+    assert config.timeframe == "1h"
+    assert config.sma_length == 150
+
+    # Invalid config
+    invalid_data = config_data.copy()
+    invalid_data["sma_length"] = -1
+    try:
+        BotConfig(**invalid_data)
+        assert False, "Should raise validation error"
+    except Exception:
+        pass

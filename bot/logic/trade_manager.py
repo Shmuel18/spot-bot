@@ -2,120 +2,65 @@ import structlog
 import uuid
 from decimal import Decimal, ROUND_FLOOR
 from binance import AsyncClient
-from bot.utils.retry import retry
 
 logger = structlog.get_logger(__name__)
 
-def find_filter(symbol_info, filter_type):
-    for f in symbol_info.get("filters", []):
-        if f["filterType"] == filter_type:
-            return f
-    return None
+async def round_to_precision(value: Decimal, step_size: str) -> Decimal:
+    return value.quantize(Decimal(step_size), rounding=ROUND_FLOOR)
 
-async def round_step_size(quantity: Decimal, step_size: str) -> Decimal:
-    step = Decimal(step_size)
-    return quantity.quantize(step, rounding=ROUND_FLOOR)
+class TradeManager:
+    def __init__(self, client: AsyncClient, config: dict):
+        self.client = client
+        self.config = config
 
-async def round_tick_size(price: Decimal, tick_size: str) -> Decimal:
-    tick = Decimal(tick_size)
-    return price.quantize(tick, rounding=ROUND_FLOOR)
+    async def get_symbol_filters(self, symbol: str):
+        info = await self.client.get_symbol_info(symbol)
+        filters = {f['filterType']: f for f in info['filters']}
+        return filters
 
-@retry(max_retries=3)
-async def get_total_balance(client: AsyncClient, config: dict, open_trades: dict) -> Decimal:
-    try:
-        account = await client.get_account()
-        total_nlv = Decimal('0')
-        usdt_data = next((b for b in account["balances"] if b["asset"] == "USDT"), None)
-        if usdt_data:
-            total_nlv += Decimal(usdt_data["free"]) + Decimal(usdt_data["locked"])
-        if open_trades:
-            tickers = await client.get_ticker()
-            ticker_dict = {t["symbol"]: Decimal(t["lastPrice"]) for t in tickers}
-            for symbol, details in open_trades.items():
-                price = ticker_dict.get(symbol, Decimal('0'))
-                total_nlv += Decimal(str(details["quantity"])) * price
-        return total_nlv
-    except Exception as e:
-        logger.error(f"Balance calculation error: {e}")
-        return Decimal('0')
+    async def place_tp_order(self, symbol: str, qty: Decimal, avg_price: Decimal):
+        try:
+            filters = await self.get_symbol_filters(symbol)
+            tick_size = filters['PRICE_FILTER']['tickSize']
+            
+            tp_price = avg_price * (1 + Decimal(str(self.config['tp_percent'])) / 100)
+            rounded_tp = await round_to_precision(tp_price, tick_size)
 
-@retry(max_retries=3)
-async def open_trade(client: AsyncClient, symbol: str, config: dict):
-    try:
-        s_info = await client.get_symbol_info(symbol)
-        lot_size = find_filter(s_info, "LOT_SIZE")["stepSize"]
-        # קבלת פילטר סכום מינימלי (Notional)
-        min_notional_filter = find_filter(s_info, "NOTIONAL") or find_filter(s_info, "MIN_NOTIONAL")
-        min_notional = Decimal(min_notional_filter.get("minNotional", "11")) if min_notional_filter else Decimal('11')
+            if self.config['dry_run']:
+                return {"orderId": f"DRY_{uuid.uuid4().hex[:8]}", "price": rounded_tp}
 
-        ticker = await client.get_ticker(symbol=symbol)
-        curr_price = Decimal(ticker["lastPrice"])
-
-        account = await client.get_account()
-        usdt_free = Decimal(next((b["free"] for b in account["balances"] if b["asset"] == "USDT"), "0"))
-        
-        pos_size_usdt = usdt_free * (Decimal(str(config["position_size_percent"])) / 100)
-        
-        # בדיקה האם הסכום המחושב קטן מהמינימום של הבורסה
-        if pos_size_usdt < min_notional:
-            logger.warning(f"Calculated size {pos_size_usdt}USDT for {symbol} is below minimum {min_notional}")
+            return await self.client.order_limit_sell(
+                symbol=symbol,
+                quantity=float(qty),
+                price=float(rounded_tp)
+            )
+        except Exception as e:
+            logger.error("failed_to_place_tp", symbol=symbol, error=str(e))
             return None
 
-        qty = await round_step_size(pos_size_usdt / curr_price, lot_size)
+    async def execute_dca(self, symbol: str, current_qty: Decimal, current_avg: Decimal, old_tp_id: str):
+        """
+        ביצוע DCA בצורה בטוחה: קודם קנייה, אחר כך ביטול TP ישן, ואז יצירת TP חדש.
+        """
+        try:
+            # 1. קנייה בשוק
+            ticker = await self.client.get_ticker(symbol=symbol)
+            curr_p = Decimal(ticker["lastPrice"])
+            
+            # חישוב כמות לפי ה-Scale הנוכחי (דוגמה פשוטה)
+            buy_qty = current_qty * Decimal("1.0") 
+            
+            if not self.config['dry_run']:
+                await self.client.order_market_buy(symbol=symbol, quantity=float(buy_qty))
+                if old_tp_id:
+                    try: await self.client.cancel_order(symbol=symbol, orderId=old_tp_id)
+                    except: pass
 
-        if qty <= 0:
+            new_qty = current_qty + buy_qty
+            new_avg = (current_avg * current_qty + curr_p * buy_qty) / new_qty
+            
+            new_tp = await self.place_tp_order(symbol, new_qty, new_avg)
+            return {"new_avg": new_avg, "new_qty": new_qty, "tp_order": new_tp}
+        except Exception as e:
+            logger.error("dca_failed", symbol=symbol, error=str(e))
             return None
-
-        if config["dry_run"]:
-            return {"quantity": qty, "avg_price": curr_price}
-
-        client_order_id = f"open_{symbol}_{uuid.uuid4().hex[:16]}"
-        order = await client.order_market_buy(symbol=symbol, quantity=float(qty), newClientOrderId=client_order_id)
-        return {"quantity": qty, "avg_price": curr_price, "order": order}
-    except Exception as e:
-        logger.error(f"Open trade error: {e}")
-        return None
-
-@retry(max_retries=3)
-async def place_take_profit_order(client, symbol, quantity: Decimal, avg_price: Decimal, config):
-    try:
-        s_info = await client.get_symbol_info(symbol)
-        tick_size = find_filter(s_info, "PRICE_FILTER")["tickSize"]
-        tp_percent = Decimal(str(config["tp_percent"])) / 100
-        tp_price = await round_tick_size(avg_price * (1 + tp_percent), tick_size)
-
-        if config["dry_run"]:
-            return {"orderId": "DRY_TP", "status": "NEW", "price": tp_price, "origQty": quantity}
-
-        client_order_id = f"tp_{symbol}_{uuid.uuid4().hex[:16]}"
-        return await client.order_limit_sell(symbol=symbol, quantity=float(quantity), price=float(tp_price), newClientOrderId=client_order_id)
-    except Exception as e:
-        logger.error(f"TP placement error: {e}")
-        return None
-
-@retry(max_retries=3)
-async def dca(client, symbol, config, current_qty: Decimal, current_avg: Decimal, trade_id, tp_id, count):
-    try:
-        if not config["dry_run"] and tp_id:
-            try: await client.cancel_order(symbol=symbol, orderId=tp_id)
-            except: pass
-
-        s_info = await client.get_symbol_info(symbol)
-        lot_size = find_filter(s_info, "LOT_SIZE")["stepSize"]
-        scale = Decimal(str(config["dca_scales"][min(count, len(config["dca_scales"]) - 1)]))
-        dca_qty = await round_step_size(current_qty * scale, lot_size)
-
-        ticker = await client.get_ticker(symbol=symbol)
-        curr_p = Decimal(ticker["lastPrice"])
-
-        if not config["dry_run"]:
-            await client.order_market_buy(symbol=symbol, quantity=float(dca_qty))
-
-        new_qty = current_qty + dca_qty
-        new_avg = (current_avg * current_qty + curr_p * dca_qty) / new_qty
-        tp_order = await place_take_profit_order(client, symbol, new_qty, new_avg, config)
-
-        return {"tp_order": tp_order, "new_avg_price": new_avg, "new_quantity": new_qty}
-    except Exception as e:
-        logger.error(f"DCA execution error: {e}")
-        return None

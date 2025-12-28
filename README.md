@@ -1,191 +1,5 @@
 <!-- <div dir="rtl" align="right">
 
-# 🤖 Spot Bot — RDR2-Spot
-בוט מסחר אוטומטי ל־**Binance Spot** המבוסס על אסטרטגיית **Mean Reversion + DCA** עם ניהול סיכונים, תיעוד עסקאות (SQLite) והתראות טלגרם.
-
-> ⚠️ **אזהרה חשובה:** זהו פרויקט תוכנה למסחר. שימוש בלייב הוא באחריותך בלבד. מומלץ להתחיל ב־`DRY_RUN`/סביבת בדיקה, עם סכומים קטנים, ולהוסיף בקרות הגנה לפני כל מעבר ללייב.
-
----
-
-## ✨ יכולות עיקריות
-- **מסחר Spot בלבד** (ללא מינוף).
-- **Mean Reversion**: כניסות על “דיפים” בתוך מסגרת חוקים.
-- **DCA (ממוצעים)**: הוספת פקודות לפי טריגר ירידה מוגדר.
-- **Take Profit**: יציאה ב־TP מוגדר לכל עסקה.
-- **DB (SQLite)**: שמירת עסקאות + אפשרות התאוששות לאחר ריסט (`recovery`).
-- **התראות Telegram**: עדכונים על כניסות/יציאות/שגיאות (בהתאם להגדרות).
-- **הפרדת קונפיג**:
-  - סודות ב־`.env`
-  - חוקים/פרמטרים ב־`config.yaml`
-
----
-
-## 🧱 מבנה הפרויקט (הסבר מהיר)
-- `bot/` — קוד המקור (ריצה, לוגיקה, exchange, DB, utils).
-- `config/` — קבצי דוגמה לקונפיג.
-- `docs/` — מסמכי אפיון (SRS) ותוצרים.
-- `.env.example` — דוגמה למשתני סביבה.
-- `config/config.yaml.example` — דוגמה לקונפיג.
-
----
-
-## ✅ דרישות מקדימות
-- Python 3.10+ (מומלץ 3.11)
-- חשבון Binance עם **API Key** ו־**API Secret**
-- הרשאות API:
-  - ✅ Read (קריאה)
-  - ✅ Spot & Margin Trading (ל־Spot Trading)
-  - ❌ **לא** לאפשר Withdraws (מומלץ להשאיר כבוי)
-
----
-
-## 🚀 התקנה והרצה (Quickstart)
-
-### 1) שכפול הפרויקט
-```bash
-git clone https://github.com/Shmuel18/spot-bot.git
-cd spot-bot
-```
-
-### 2) יצירת סביבה והתקנת תלויות
-אם יש `requirements.txt`:
-```bash
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# Mac/Linux:
-source .venv/bin/activate
-
-pip install -r requirements.txt
-```
-
-אם יש `pyproject.toml`:
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -U pip
-pip install .
-```
-
-### 3) יצירת `.env`
-העתק את הדוגמה:
-```bash
-copy .env.example .env
-```
-או:
-```bash
-cp .env.example .env
-```
-
-מלא את הערכים (דוגמה):
-- `BINANCE_API_KEY=...`
-- `BINANCE_API_SECRET=...`
-- `TELEGRAM_BOT_TOKEN=...` (אופציונלי)
-- `TELEGRAM_CHAT_ID=...` (אופציונלי)
-- `ENV=prod|test` (לפי הקוד אצלך)
-- `DRY_RUN=true|false`
-
-### 4) יצירת `config.yaml`
-```bash
-copy config\config.yaml.example config\config.yaml
-```
-או:
-```bash
-cp config/config.yaml.example config/config.yaml
-```
-
-### 5) הרצה
-> הפקודה המדויקת תלויה ב־entrypoint בפרויקט. האפשרויות הנפוצות:
-```bash
-python -m bot
-```
-או:
-```bash
-python bot/main.py
-```
-
----
-
-## ⚙️ קונפיגורציה (config.yaml)
-הקובץ `config.yaml` הוא “המוח” של החוקים:
-- רשימת סימבולים / סינון נפח
-- גודל פוזיציה
-- TP (%)
-- טריגר DCA (%)
-- מקסימום מדרגות DCA
-- מגבלות סיכון (מומלץ להפעיל): max positions, exposure limits, daily loss
-
-דגשים מומלצים:
-- `dca_trigger` צריך להיות **אחוז חיובי** (למשל `3.5` = ירידה של 3.5%).
-- להגדיר `max_positions` כדי לא להיפתח על יותר מדי סימבולים.
-- להגדיר `cooldown` כדי להימנע מספאם כניסות.
-
----
-
-## 🔐 אבטחה ו־Secrets
-- **לא** מעלים ל־GitHub קובץ `.env`
-- ודא ש־`.env` נמצא ב־`.gitignore`
-- מומלץ לייצר API Key ייעודי לבוט ולהגביל IP אם אפשר.
-
----
-
-## 🧪 מצבי עבודה
-- **DRY_RUN**: סימולציה (לא שולח פקודות אמת). מומלץ להתחיל כאן.
-- **LIVE**: שולח פקודות אמת ל־Binance.
-
-> כדאי להוסיף לוגים ברורים בכל פעולה משמעותית: פתיחה, DCA, TP, ביטולים, שגיאות.
-
----
-
-## 📦 DB / Recovery
-הבוט שומר עסקאות ב־SQLite כדי:
-- לשמור היסטוריה
-- לבצע `recovery` לאחר ריסט (למשל לבדוק אם TP התמלא)
-
-> מומלץ לוודא שהריצה השוטפת מבצעת ניטור TP בצורה רציפה, לא רק בתחילת הרצה.
-
----
-
-## 🧰 פיתוח וסטנדרטים (מומלץ)
-- `ruff` / `flake8` ללינט
-- `black` לפורמט
-- `pytest` לטסטים
-- GitHub Actions ל־CI בסיסי
-
----
-
-## 🗺️ Roadmap (רעיונות לשדרוג)
-- ניטור TP רציף בלולאה הראשית
-- חישוב equity מלא בספוט (כולל שווי נכסים מוחזקים)
-- Backtest / Paper Trading
-- Dashboard קטן (סטטוס פוזיציות, PnL, חשיפות)
-- Rate-limit handling מתקדם ל־Binance API
-- ניהול “מצב” עקבי בין DB ל־Exchange (source of truth)
-
----
-
-## 📄 מסמכים
-- `docs/RDR2-Spot-SRS.md` — אפיון מערכת (SRS)
-- `docs/Deliverables.md` — תוצרים/דרישות למסירה
-
----
-
-## 🤝 תרומה לפרויקט
-PRs מתקבלים בכיף:
-1. Fork
-2. Branch חדש
-3. Commitים ברורים
-4. Pull Request עם תיאור שינוי + בדיקות
-
----
-
-## 📜 רישיון
-עדכן כאן רישיון אם תרצה (MIT / Apache-2.0 / GPL וכו').
-
-</div> -->
-
-<div dir="rtl" align="right">
-
 # 🤖✨ RDR2-Spot — Binance Spot Bot ✨🤖
 
 **Mean Reversion + DCA | Risk Management | SQLite | Telegram Alerts**
@@ -198,14 +12,14 @@ PRs מתקבלים בכיף:
   <img alt="License" src="https://img.shields.io/badge/License-TBD-lightgrey" />
 </p>
 
-> ⚠️ **אזהרה:** מסחר כרוך בסיכון. הפרויקט הזה הוא כלי תוכנה. שימוש בלייב הוא באחריותך בלבד.  
+> ⚠️ **אזהרה:** מסחר כרוך בסיכון. הפרויקט הזה הוא כלי תוכנה. שימוש בלייב הוא באחריותך בלבד.
 > מומלץ להתחיל ב־`DRY_RUN`/סביבת בדיקה, עם סכומים קטנים, ולהוסיף בקרות הגנה לפני מעבר ללייב.
 
 ---
 
 ## 👋 מה זה הפרויקט?
 
-**RDR2-Spot** הוא בוט מסחר אוטומטי ל־**Binance Spot** שמנסה לנצל ירידות קצרות טווח (דיפים) באמצעות אסטרטגיית **Mean Reversion**.  
+**RDR2-Spot** הוא בוט מסחר אוטומטי ל־**Binance Spot** שמנסה לנצל ירידות קצרות טווח (דיפים) באמצעות אסטרטגיית **Mean Reversion**.
 במידת הצורך הוא מוסיף מדרגות **DCA** (מיצוע), ומנהל את העסקאות דרך חוקים ברורים של סיכון, תיעוד והתרעות.
 
 ---
@@ -399,5 +213,212 @@ __pycache__/
 ## 📬 יצירת קשר
 
 אם בא לך לשפר יחד, להוסיף פיצ׳רים או לעשות review — פתח Issue / שלח הודעה.
+
+</div> -->
+<div dir="rtl" align="right">
+
+# 🤖 BOT SPOT — Binance Spot Trading Bot (Mean Reversion + DCA)
+
+בוט מסחר אוטומטי ל־**Binance Spot** המבוסס על:
+
+- **Mean Reversion**: כניסה אחרי "דיפ" ביחס למחיר פתיחה + מתחת ל־SMA
+- **DCA**: מיצועים לפי טריגר ירידה
+- **TP (Take Profit)**: פקודת מכירה ברווח לכל עסקה
+- **SQLite** לתיעוד ו־**Recovery** אחרי ריסט
+- **Telegram Alerts** (אופציונלי)
+
+> ⚠️ **אזהרה:** מסחר כרוך בסיכון. הפרויקט הזה הוא תוכנה בלבד. שימוש בלייב הוא באחריותך.
+
+---
+
+## ✨ מה הבוט עושה בפועל?
+
+### 1) סריקה וסינון סימבולים
+
+- מושך את כל הזוגות מול **USDT**
+- מסנן לפי `min_24h_volume`
+- מסיר זוגות שחוסמים ב־`blacklist`
+
+### 2) תנאי כניסה (Signal)
+
+לכל סימבול:
+
+- מחשב SMA לפי `sma_length` ו־`timeframe` (עם קאש ל־5 דקות)
+- מושך קנדל אחרון ובודק:
+  - אחוז שינוי מה־Open של הקנדל האחרון קטן/שווה ל־`dip_threshold` (שלילי)
+  - המחיר הנוכחי קטן מה־SMA
+
+### 3) פתיחת עסקה
+
+- מחשב גודל פוזיציה לפי `position_size_percent` מתוך USDT חופשי
+- בודק מינימום Notional של הבורסה
+- פותח `MARKET BUY` (או מדמה אם `dry_run=true`)
+- מציב `LIMIT SELL` ל־TP לפי `tp_percent`
+
+### 4) ניטור עסקאות פתוחות
+
+- בודק האם ה־TP התמלא (בלייב לפי סטטוס הזמנה, וב־dry_run לפי מחיר שוק)
+- אם טריגר DCA מתקיים:
+  - מבטל TP ישן (בלייב)
+  - קונה תוספת לפי `dca_scales`
+  - מחשב ממוצע חדש ומציב TP חדש
+- מעדכן DB כדי שהבוט יוכל להתאושש אחרי ריסט
+
+### 5) ניהול סיכון בסיסי
+
+- `max_positions`: לא פותח יותר מדי עסקאות במקביל
+- `daily_loss_limit`: אם ה־equity ירד באחוז היומי שהוגדר, מפסיק לפתוח עסקאות חדשות באותו יום
+
+---
+
+## 🧱 מבנה הפרויקט
+
+```text
+BOT SPOT/
+├─ bot/
+│  ├─ main.py                    # מנוע הריצה (TradingEngine)
+│  ├─ config_model.py            # מודל Pydantic להגדרות חובה
+│  ├─ exchange/
+│  │  └─ binance_service.py      # משיכת זוגות/סינון נפח/בדיקת הזמנות
+│  ├─ logic/
+│  │  ├─ signal_engine.py        # SMA + תנאי כניסה
+│  │  ├─ dca_engine.py           # תנאי DCA
+│  │  └─ trade_manager.py        # פתיחה/TP/DCA/חישוב equity בסיסי
+│  ├─ database/
+│  │  ├─ database_service.py     # SQLite CRUD + סכמות
+│  │  └─ trades.db               # DB מקומי (מומלץ לא להעלות לגיט)
+│  ├─ notifications/
+│  │  └─ telegram_service.py     # שליחת התראות לטלגרם
+│  └─ utils/
+│     └─ retry.py                # retry בסיסי (Binance errors)
+├─ config/
+│  └─ config.yaml                # פרמטרים של אסטרטגיה/סיכון
+├─ tests/                        # pytest (async)
+├─ requirements.txt
+├─ .env.example
+└─ README.md
+```
+
+---
+
+## ✅ דרישות מקדימות
+
+- Python **3.10+** (מומלץ 3.11)
+- חשבון Binance + API Key/Secret
+- הרשאות API מומלצות:
+  - ✅ Read
+  - ✅ Spot Trading
+  - ❌ Withdrawals (להשאיר כבוי)
+
+---
+
+## 🚀 התקנה
+
+```bash
+# מתוך תיקיית הפרויקט
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# Mac/Linux
+source .venv/bin/activate
+
+pip install -U pip
+pip install -r requirements.txt
+```
+
+---
+
+## 🔐 הגדרת סודות (.env)
+
+1. יוצרים קובץ `.env` על בסיס הדוגמה:
+
+```bash
+cp .env.example .env
+```
+
+2. ממלאים ערכים:
+
+```env
+BINANCE_API_KEY=...
+BINANCE_API_SECRET=...
+
+TELEGRAM_TOKEN=...       # אופציונלי
+TELEGRAM_CHAT_ID=...     # אופציונלי
+
+DATABASE_FILE=bot/database/trades.db
+```
+
+> אם אין טלגרם — אפשר להשאיר ריק, אבל אז כדאי לוודא שהקוד לא קורס במקרה של ערכים חסרים.
+
+---
+
+## ⚙️ קונפיגורציה (config/config.yaml)
+
+דוגמה (כמו בריפו):
+
+```yaml
+timeframe: 15m
+dip_threshold: -3.0
+sma_length: 150
+
+tp_percent: 2.5
+
+dca_trigger: 3.5
+dca_scales: [1.0, 1.5, 2.0]
+
+position_size_percent: 3
+max_positions: 5
+min_24h_volume: 5000000
+blacklist: [USDC, FDUSD, TUSD, DAI, USDP, UP, DOWN, BULL, BEAR]
+
+cooldown: 30
+daily_loss_limit: 5
+
+dry_run: true
+sleep_interval: 60
+```
+
+דגשים:
+
+- `dip_threshold` הוא **שלילי** (למשל `-3.0` = ירידה של 3% מה־Open).
+- `dca_trigger` הוא **חיובי** (למשל `3.5` = ירידה של 3.5% מתחת למחיר הממוצע).
+- `dca_scales` אצלך עובד כמכפלה על **הכמות הנוכחית** (יכול לגדול מהר — שים לב).
+
+---
+
+## ▶️ הרצה
+
+```bash
+python bot/main.py
+```
+
+---
+
+## 🧪 בדיקות
+
+```bash
+pytest -q
+```
+
+---
+
+## 🧰 הערות חשובות לפרודקשן
+
+מומלץ לפני מעבר ללייב:
+
+- להוסיף `TradingEngine.run()` (לולאת ריצה) אם עדיין חסר/לא קיים
+- לוודא טיפול מסודר ב־Rate Limits וב־BinanceAPIException
+- לחשב equity אמיתי בספוט (שווי כל הנכסים, לא רק USDT + פוזיציות פתוחות שהבוט "זוכר")
+- לוודא ש־DB/State והבורסה מסונכרנים (source of truth ברור)
+- להגדיר `.gitignore` כך שלא יעלה:
+  - `.env`, `*.db`, `.venv/`, `.pytest_cache/`, `__pycache__/`
+
+---
+
+## 📌 רישיון
+
+לא הוגדר עדיין. אפשר להוסיף MIT / Apache-2.0 וכו׳ לפי הצורך.
 
 </div>

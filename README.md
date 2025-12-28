@@ -215,6 +215,75 @@ __pycache__/
 אם בא לך לשפר יחד, להוסיף פיצ׳רים או לעשות review — פתח Issue / שלח הודעה.
 
 </div> -->
+<!-- <div dir="rtl" align="right">
+
+# 🤖✨ Spot-Bot — Binance Spot Bot ✨🤖
+
+**Mean Reversion + DCA | Risk Management | SQLite | Telegram Alerts**
+
+<p align="right">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue" />
+  <img alt="Binance" src="https://img.shields.io/badge/Exchange-Binance%20Spot-yellow" />
+  <img alt="Async" src="https://img.shields.io/badge/Async-asyncio-7D3CFF" />
+  <img alt="DB" src="https://img.shields.io/badge/DB-SQLite-0A7" />
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-lightgrey" />
+</p>
+
+> ⚠️ **אזהרה:** מסחר כרוך בסיכון. זהו כלי תוכנה. שימוש בלייב הוא באחריותך בלבד.
+> מומלץ להתחיל ב־`DRY_RUN`, עם סכומים קטנים, ולהפעיל בקרות סיכון לפני מעבר ללייב.
+
+---
+
+## 👋 מה זה הפרויקט?
+
+**Spot-Bot** הוא בוט מסחר אוטומטי ל־**Binance Spot** שמנסה לנצל ירידות קצרות טווח ("דיפים") לפי אסטרטגיית **Mean Reversion**.
+כאשר המחיר ממשיך לרדת — הבוט מוסיף מדרגות **DCA**, מחשב ממוצע חדש, ומעדכן את ה־Take Profit בהתאם.
+
+---
+
+## ✨ יכולות עיקריות
+
+- ✅ Spot בלבד (ללא מינוף)
+- ✅ כניסה לפי Mean Reversion (Dip + SMA)
+- ✅ DCA מדורג עם טריגר ירידה ומקסימום מדרגות
+- ✅ Take Profit אוטומטי לכל עסקה
+- ✅ שמירת מצב ב־SQLite + Recovery לאחר ריסט
+- ✅ Telegram Alerts (אופציונלי)
+- ✅ הפרדת סודות (`.env`) וחוקים (`config.yaml`)
+
+---
+
+## ⚙️ Tech Stack
+
+<p align="right">
+  <img alt="Python" src="https://img.shields.io/badge/Python-🐍-blue" />
+  <img alt="Asyncio" src="https://img.shields.io/badge/Asyncio-⚡-7D3CFF" />
+  <img alt="Binance API" src="https://img.shields.io/badge/Binance%20API-📈-yellow" />
+  <img alt="SQLite" src="https://img.shields.io/badge/SQLite-🗄️-0A7" />
+  <img alt="Telegram" src="https://img.shields.io/badge/Telegram-📨-2CA5E0" />
+</p>
+
+---
+
+## 🧱 מבנה הפרויקט
+
+```text
+spot-bot/
+├─ bot/
+│  ├─ exchange/
+│  ├─ logic/
+│  ├─ risk/
+│  ├─ database/
+│  ├─ notifications/
+│  └─ main.py
+├─ config/
+│  └─ config.yaml.example
+├─ .env.example
+└─ README.md
+```
+
+</div> -->
+
 <div dir="rtl" align="right">
 
 # 🤖✨ Spot-Bot — Binance Spot Bot ✨🤖
@@ -281,5 +350,71 @@ spot-bot/
 ├─ .env.example
 └─ README.md
 ```
+
+---
+
+## 🚀 התקנה והרצה
+
+```bash
+git clone https://github.com/Shmuel18/spot-bot.git
+cd spot-bot
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+source .venv/bin/activate # Mac/Linux
+pip install -r requirements.txt
+cp .env.example .env
+cp config/config.yaml.example config/config.yaml
+python bot/main.py
+```
+
+---
+
+## 🔐 משתני סביבה (.env)
+
+```env
+BINANCE_API_KEY=...
+BINANCE_API_SECRET=...
+DRY_RUN=true
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+```
+
+---
+
+## 🛠️ קונפיגורציה (config.yaml)
+
+- dip_threshold — אחוז ירידה לכניסה
+- tp_percent — יעד רווח
+- dca_trigger — ירידה להפעלת DCA
+- max_ladders — מקסימום מדרגות
+- position_size_percent — חשיפה
+
+---
+
+## 🧪 מצבי עבודה
+
+- DRY_RUN=true — סימולציה
+- DRY_RUN=false — לייב
+
+---
+
+## 🗺️ Roadmap
+
+- [ ] Backtesting
+- [ ] Dashboard
+- [ ] CI / Tests
+- [ ] Dry-run משופר
+
+---
+
+## 📄 רישיון
+
+MIT
+
+---
+
+## 📬 יצירת קשר
+
+Issue / PR / הודעה בפרטי 🙂
 
 </div>

@@ -10,6 +10,24 @@ sma_cache: Dict[Tuple[str, str], Tuple[float, datetime]] = {}
 CACHE_EXPIRY_MINUTES = 5  # Expire cache after 5 minutes
 
 
+def parse_timeframe(timeframe: str) -> int:
+    """
+    Parse timeframe string to seconds.
+    
+    Examples: '15m' -> 900, '1h' -> 3600, '1d' -> 86400
+    """
+    unit = timeframe[-1]
+    value = int(timeframe[:-1])
+    if unit == 'm':
+        return value * 60
+    elif unit == 'h':
+        return value * 3600
+    elif unit == 'd':
+        return value * 86400
+    else:
+        raise ValueError(f"Unsupported timeframe unit: {unit}")
+
+
 async def get_sma_150(client: AsyncClient, symbol: str, config: dict) -> Optional[float]:
     """
     Calculate the 150-period SMA for a given symbol and timeframe.
@@ -38,8 +56,10 @@ async def get_sma_150(client: AsyncClient, symbol: str, config: dict) -> Optiona
             del sma_cache[cache_key]
 
     try:
-        # Read candles - one candle before current to ensure closure
-        start_str = (now - timedelta(hours=config["sma_length"])).strftime("%Y-%m-%d %H:%M:%S")
+        # Calculate seconds for sma_length candles
+        timeframe_seconds = parse_timeframe(config["timeframe"])
+        total_seconds = config["sma_length"] * timeframe_seconds
+        start_str = (now - timedelta(seconds=total_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         klines = await client.get_historical_klines(symbol, config["timeframe"], start_str=start_str)
         if len(klines) < config["sma_length"]:
             return None

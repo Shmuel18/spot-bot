@@ -91,6 +91,7 @@ async def main():
                 "avg_price": trade["avg_price"],
                 "trade_id": trade["id"],
                 "tp_order_id": trade["tp_order_id"],
+                "tp_price": trade["avg_price"] * (1 + config["tp_percent"] / 100),
                 "dca_count": trade["dca_count"],
             }
             for trade in open_trades_db
@@ -125,8 +126,13 @@ async def main():
                 # Monitor open trades (TP + DCA)
                 for symbol, trade_data in list(open_trades.items()):
                     # Check if TP is filled
-                    order_status = await get_order(client, symbol, trade_data["tp_order_id"])
-                    if order_status and order_status["status"] == "FILLED":
+                    if config.get("dry_run", False):
+                        ticker = await client.get_ticker(symbol=symbol)
+                        filled = float(ticker["lastPrice"]) >= trade_data["tp_price"]
+                    else:
+                        order_status = await get_order(client, symbol, trade_data["tp_order_id"])
+                        filled = order_status and order_status["status"] == "FILLED"
+                    if filled:
                         logging.info(f"✅ TP Filled for {symbol}")
                         await update_trade_status(trade_data["trade_id"], TRADE_STATE_CLOSED_PROFIT)
                         del open_trades[symbol]
@@ -175,6 +181,7 @@ async def main():
                                         "avg_price": trade["avg_price"],
                                         "trade_id": t_id,
                                         "tp_order_id": tp["orderId"],
+                                        "tp_price": tp["price"],
                                         "dca_count": 0,
                                     }
                                     await telegram_service.send_message(chat_id, f"🚀 Entered Trade: {symbol}")

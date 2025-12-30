@@ -100,3 +100,54 @@ class TradingEngine:
     async def notify(self, message: str):
         if self.telegram and self.chat_id:
             await self.telegram.send_message(self.chat_id, f"🤖 <b>SpotBot:</b>\n{message}")
+
+# --- חלק ההרצה (נוסף על ידי Gemini) ---
+if __name__ == "__main__":
+    import yaml
+    from dotenv import load_dotenv
+    from binance import AsyncClient
+    from bot.config_model import BotConfig
+
+    # טעינת משתני סביבה
+    load_dotenv()
+
+    async def main():
+        # בדיקה שקובץ הקונפיגורציה קיים
+        if not os.path.exists("config/config.yaml"):
+            print("Error: Config file not found in config/config.yaml")
+            return
+
+        # טעינת קונפיגורציה
+        with open("config/config.yaml", "r", encoding="utf-8") as f:
+            raw_config = yaml.safe_load(f)
+        
+        # אימות קונפיגורציה מול המודל
+        try:
+            config = BotConfig(**raw_config)
+        except Exception as e:
+            print(f"Config validation error: {e}")
+            return
+
+        # יצירת קליינט בינאנס
+        api_key = os.getenv("BINANCE_API_KEY")
+        api_secret = os.getenv("BINANCE_API_SECRET")
+        
+        if not api_key or not api_secret:
+            print("Error: Missing BINANCE_API_KEY or BINANCE_API_SECRET in .env file")
+            return
+
+        client = await AsyncClient.create(api_key, api_secret)
+        
+        try:
+            # יצירת המנוע והרצה
+            engine = TradingEngine(config, client)
+            await engine.run()
+        except Exception as e:
+            print(f"Fatal error: {e}")
+        finally:
+            await client.close_connection()
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot stopped by user.")

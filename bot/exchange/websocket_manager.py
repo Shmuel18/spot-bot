@@ -17,7 +17,8 @@ class PriceCache:
     async def start(self):
         logger.info("starting_websocket_stream")
         try:
-            ts = self.bsm.all_ticker_socket()
+            # תיקון: שימוש ב-multiplex_socket במקום all_ticker_socket
+            ts = self.bsm.multiplex_socket(['!ticker@arr'])
             self._socket_task = asyncio.create_task(self._listen(ts))
         except Exception as e:
             logger.error("websocket_start_failed", error=str(e))
@@ -27,12 +28,17 @@ class PriceCache:
             async with ts as tscm:
                 while True:
                     res = await tscm.recv()
+                    
+                    # הוספנו טיפול במבנה של multiplex (data עטוף בתוך stream/data)
+                    data = res['data'] if 'data' in res else res
+
                     self.last_update = datetime.now(timezone.utc)
-                    if isinstance(res, list):
-                        for ticker in res:
+                    
+                    if isinstance(data, list):
+                        for ticker in data:
                             self.prices[ticker['s']] = Decimal(str(ticker['c']))
-                    elif isinstance(res, dict) and res.get('e') == '24hrTicker':
-                        self.prices[res['s']] = Decimal(str(res['c']))
+                    elif isinstance(data, dict) and data.get('e') == '24hrTicker':
+                        self.prices[data['s']] = Decimal(str(data['c']))
         except asyncio.CancelledError:
             pass
         except Exception as e:

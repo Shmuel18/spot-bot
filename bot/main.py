@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import structlog
 from bot.database.database_service import create_tables, TradeRepository
 from bot.logic.trade_manager import TradeManager
@@ -18,10 +19,14 @@ class TradingEngine:
         self.manager = TradeManager(client, config.model_dump())
         self.price_cache = PriceCache(client)
         self.running = True
+        self.last_heartbeat = None
+        self.heartbeat_interval = 300  # 5 minutes
         
         token = os.getenv("TELEGRAM_TOKEN")
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        self.telegram = TelegramService(token) if token else None
+        # Allow disabling Telegram via env var TELEGRAM_ENABLED (0/false/no to disable)
+        enabled = os.getenv("TELEGRAM_ENABLED", "1").lower() not in ("0", "false", "no")
+        self.telegram = TelegramService(token) if token and self.chat_id and enabled else None
 
     async def run(self):
         await self.initialize()
@@ -29,6 +34,18 @@ class TradingEngine:
         
         while self.running:
             try:
+                # Heartbeat log every 5 minutes
+                now = time.time()
+                if self.last_heartbeat is None or (now - self.last_heartbeat) >= self.heartbeat_interval:
+                    open_trades = await TradeRepository.get_open_trades()
+                    cached_prices = len(self.price_cache.prices)
+                    logger.info("heartbeat", 
+                               status="running",
+                               open_positions=len(open_trades),
+                               cached_prices=cached_prices,
+                               websocket_healthy=self.price_cache.is_healthy())
+                    self.last_heartbeat = now
+                
                 # בדיקת בריאות Websocket
                 if not self.price_cache.is_healthy():
                     logger.warning("stale_market_data_skipping_cycle")
@@ -81,6 +98,15 @@ class TradingEngine:
         logger.info("system_startup")
         await create_tables()
         await self.price_cache.start()
+        
+        # Wait for WebSocket to connect and receive initial data
+        logger.info("waiting_for_websocket_data")
+        for _ in range(10):  # Wait up to 10 seconds
+            await asyncio.sleep(1)
+            if self.price_cache.is_healthy():
+                logger.info("websocket_connected", cached_prices=len(self.price_cache.prices))
+                break
+        
         await self.reconcile()
         await self.notify("הבוט עלה לאוויר עם הגנות ייצור! 🚀")
 
@@ -127,6 +153,22 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Config validation error: {e}")
             return
+
+        # אפשרות להפעיל מסחר חי מתוך משתני הסביבה
+        force_live = os.getenv("FORCE_LIVE", "0").lower() in ("1", "true", "yes")
+        if force_live:
+            try:
+                config = config.model_copy(update={"dry_run": False})
+                print("LIVE TRADING ENABLED: dry_run set to False")
+            except Exception:
+                # גיבוי: אם model_copy לא זמין
+                try:
+                    config.dry_run = False
+                    print("LIVE TRADING ENABLED: dry_run set to False")
+                except Exception:
+                    print("Warning: unable to set dry_run=False on config object")
+        else:
+            print(f"dry_run = {config.dry_run}; set FORCE_LIVE=1 to enable live trading")
 
         # יצירת קליינט בינאנס
         api_key = os.getenv("BINANCE_API_KEY")

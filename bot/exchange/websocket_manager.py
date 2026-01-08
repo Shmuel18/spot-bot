@@ -1,5 +1,6 @@
 import asyncio
 import structlog
+import os
 from datetime import datetime, timezone
 from binance import BinanceSocketManager
 from decimal import Decimal
@@ -13,6 +14,8 @@ class PriceCache:
         self.prices = {}
         self.last_update = None
         self._socket_task = None
+        # Allow forcing healthy state via env var for local/testing runs
+        self.force_healthy = os.getenv("FORCE_PRICE_CACHE_HEALTHY", "0").lower() not in ("0", "false", "no")
 
     async def start(self):
         logger.info("starting_websocket_stream")
@@ -46,6 +49,8 @@ class PriceCache:
 
     def is_healthy(self, max_age_seconds=30) -> bool:
         """בדיקת דופק - האם קיבלנו עדכון מחיר לאחרונה"""
+        if self.force_healthy:
+            return True
         if not self.last_update: return False
         age = (datetime.now(timezone.utc) - self.last_update).total_seconds()
         return age < max_age_seconds

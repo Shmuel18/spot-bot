@@ -5,6 +5,15 @@ bot/.env
 # מסד נתונים
 bot/database/*.db
 
+# קבצי לוג
+*.log
+*.err
+bot.log
+bot.err
+
+# קבצי טסט זמניים
+test_ws.py
+
 # קבצי מטמון של פייתון
 __pycache__/
 *.pyc
